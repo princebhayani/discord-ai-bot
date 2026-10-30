@@ -87,7 +87,78 @@ export class TicketQueueManager {
   private readonly closingChannels = new Set<string>();
   private readonly seenMessageIds = new Map<string, number>();
   private readonly ticketTurnTimestamps = new Map<string, number[]>();
-  private readonly maxSeenCacheSize = 5000;
+  private readonly maxSeenCacheSize = 500;
+  private shuttingDown = false;
+
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
+  /**
+   * Stops accepting new ticket tasks during graceful process shutdown while allowing
+   * currently running in-flight tasks a bounded window to complete.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true;
+  }
+
+  getInFlightCount(): number {
+    return this.ticketChains.size;
+  }
+
+  /**
+   * Waits up to timeoutMs for active ticket chains to settle; aborts remaining operations on timeout.
+   */
+  async waitForInFlightTasks(
+    timeoutMs: number
+  ): Promise<{ completedCleanly: boolean; remainingCount: number }> {
+    const activePromises = Array.from(this.ticketChains.values());
+    if (activePromises.length === 0) {
+      return { completedCleanly: true, remainingCount: 0 };
+    }
+
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, Math.max(100, timeoutMs));
+      timer.unref?.();
+    });
+
+    await Promise.race([Promise.allSettled(activePromises).then(() => undefined), timeoutPromise]);
+    if (timer) {
+      clearTimeout(timer);
+    }
+
+    if (timedOut && this.ticketChains.size > 0) {
+      for (const controller of this.abortControllers.values()) {
+        if (!controller.signal.aborted) {
+          controller.abort();
+        }
+      }
+      return { completedCleanly: false, remainingCount: this.ticketChains.size };
+    }
+
+    return { completedCleanly: true, remainingCount: 0 };
+  }
+
+  /**
+   * Clears all transient in-memory queue structures on final process exit.
+   */
+  clearMemoryState(): void {
+    for (const controller of this.abortControllers.values()) {
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    }
+    this.abortControllers.clear();
+    this.ticketChains.clear();
+    this.closingChannels.clear();
+    this.seenMessageIds.clear();
+    this.ticketTurnTimestamps.clear();
+  }
 
   getOrCreateSignal(channelId: string): AbortSignal {
     let controller = this.abortControllers.get(channelId);
@@ -136,7 +207,7 @@ export class TicketQueueManager {
     channelId: string,
     task: (signal: AbortSignal) => Promise<T>
   ): Promise<T | undefined> {
-    if (this.isClosingOrAborted(channelId)) {
+    if (this.shuttingDown || this.isClosingOrAborted(channelId)) {
       return Promise.resolve(undefined);
     }
 

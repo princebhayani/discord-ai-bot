@@ -1,8 +1,9 @@
 # ==============================================================================
-# Multi-Stage Production Dockerfile for @hrbot/bot (Northflank Persistent Worker)
+# Multi-Stage Production Dockerfile for @hrbot/bot (Render / Container Hosting)
 # ==============================================================================
 # Lightweight Node 22 LTS Alpine image containing ONLY @hrbot/bot and @hrbot/shared.
-# Requires NO inbound public HTTP port in normal operation (outbound Gateway/HTTPS only).
+# Runs the Discord Gateway bot + built-in HTTP health server (/healthz, /readyz)
+# inside a single Node.js process listening on process.env.PORT (default 3000).
 # ==============================================================================
 
 FROM node:22-alpine AS builder
@@ -34,7 +35,7 @@ RUN rm -rf packages/shared/src apps/bot/src \
 # ------------------------------------------------------------------------------
 FROM node:22-alpine AS runner
 
-# dumb-init ensures clean PID 1 signal forwarding (SIGTERM / SIGINT) on Northflank
+# dumb-init ensures clean PID 1 signal forwarding (SIGTERM / SIGINT) on container hosts
 RUN apk add --no-cache dumb-init
 
 ENV NODE_ENV=production

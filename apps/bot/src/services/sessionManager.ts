@@ -69,6 +69,39 @@ export class SessionManager {
     this.pendingCandidates.delete(channelId);
   }
 
+  /**
+   * Prunes expired pending provider-verification candidates so memory never accumulates stale entries.
+   */
+  pruneExpiredCandidates(now = Date.now()): number {
+    let pruned = 0;
+    for (const [channelId, candidate] of this.pendingCandidates.entries()) {
+      if (now >= candidate.expiresAt) {
+        this.pendingCandidates.delete(channelId);
+        pruned++;
+      }
+    }
+    return pruned;
+  }
+
+  /**
+   * Returns numeric counts of in-memory maps for safe memory diagnostics.
+   */
+  getMemoryStateCounts(): { activeSessions: number; pendingCandidates: number } {
+    return {
+      activeSessions: this.activeSessionsByChannel.size,
+      pendingCandidates: this.pendingCandidates.size,
+    };
+  }
+
+  /**
+   * Clears in-memory caches ONLY during process termination.
+   * Never deletes active ticket records from Supabase on host restart.
+   */
+  clearMemoryState(): void {
+    this.activeSessionsByChannel.clear();
+    this.pendingCandidates.clear();
+  }
+
   async resolveActiveSession(channelId: string): Promise<TicketSessionRecord | null> {
     if (this.queueManager.isClosingOrAborted(channelId)) {
       return null;
@@ -94,6 +127,7 @@ export class SessionManager {
   async observeChannelOrThreadCreated(
     channel: ObservedChannelMetadata
   ): Promise<TicketSessionRecord | null> {
+    this.pruneExpiredCandidates();
     if (this.activeSessionsByChannel.has(channel.channelId)) {
       return this.activeSessionsByChannel.get(channel.channelId) ?? null;
     }

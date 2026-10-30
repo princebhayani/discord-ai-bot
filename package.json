@@ -12,6 +12,7 @@
     "build": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/bot build && pnpm --filter @hrbot/dashboard build",
     "build:bot": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/bot build",
     "build:dashboard": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/dashboard build",
+    "start:bot": "pnpm --filter @hrbot/bot start",
     "typecheck": "pnpm --filter @hrbot/shared typecheck && pnpm --filter @hrbot/bot typecheck && pnpm --filter @hrbot/dashboard typecheck",
     "test": "vitest run",
     "test:watch": "vitest",

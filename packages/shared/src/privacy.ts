@@ -23,7 +23,7 @@ const SECRET_PATTERNS: readonly SecretPattern[] = [
   },
   {
     category: 'api_key',
-    regex: /\b(gsk_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|sbp_[A-Za-z0-9]{20,})\b/g,
+    regex: /\b(gsk_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|sbp_[A-Za-z0-9]{20,}|sb_secret_[A-Za-z0-9_-]{16,})\b/g,
     replacement: '[REDACTED_API_KEY]',
   },
   {
@@ -76,6 +76,8 @@ const REDACTED_LOG_KEYS = new Set([
   'DISCORD_BOT_TOKEN',
   'GROQ_API_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_SECRET_KEY',
+  'TICKET_WEBHOOK_SECRET',
 ]);
 
 /**

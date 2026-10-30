@@ -92,6 +92,7 @@ describe('Phase 10: Non-Negotiable Restrictions, Concurrency Isolation & End-to-
 
       if (isClientComponent) {
         expect(content).not.toContain('process.env.SUPABASE_SERVICE_ROLE_KEY');
+        expect(content).not.toContain('process.env.SUPABASE_SECRET_KEY');
         expect(content).not.toContain('process.env.GROQ_API_KEY');
         expect(content).not.toContain('process.env.DISCORD_BOT_TOKEN');
       }

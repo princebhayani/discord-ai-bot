@@ -228,6 +228,17 @@ export class PlayerDataBotAdapter {
     }
   }
 
+  /**
+   * Cancels all pending external bot lookup timers during graceful process shutdown.
+   */
+  cancelAllPendingLookups(): void {
+    for (const [lookupId, waiter] of this.pendingWaiters.entries()) {
+      clearTimeout(waiter.timer);
+      this.pendingWaiters.delete(lookupId);
+      waiter.resolve(null);
+    }
+  }
+
   async executeLookup(params: {
     session: TicketSessionRecord;
     rawAction: string;

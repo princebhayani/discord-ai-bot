@@ -158,7 +158,7 @@ export interface BotDatabaseRepository {
     redacted: boolean;
   }): Promise<{ message: TicketMessageRecord; duplicate: boolean }>;
 
-  listTicketMessages(sessionId: string): Promise<TicketMessageRecord[]>;
+  listTicketMessages(sessionId: string, maxRecent?: number): Promise<TicketMessageRecord[]>;
 
   upsertTicketAnswer(input: {
     sessionId: string;
@@ -245,6 +245,25 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
     });
   }
 
+  /**
+   * Retries transient Supabase network failures with bounded exponential backoff.
+   */
+  private async withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        if (attempt < maxAttempts) {
+          const delayMs = attempt * 200;
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   private mapServerSettingsRow(row: Record<string, unknown>, defaultModel: string): ServerSettings {
     const aiRaw = (row.ai_settings as Record<string, unknown> | null) ?? {};
     const parsedAi = AiSettingsSchema.parse({
@@ -295,76 +314,80 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
   }
 
   async ensureServerSettings(guildId: string, defaultModel: string): Promise<ServerSettings> {
-    const { data: existing, error: fetchError } = await this.supabase
-      .from('server_settings')
-      .select('*')
-      .eq('guild_id', guildId)
-      .maybeSingle();
+    return this.withRetry(async () => {
+      const { data: existing, error: fetchError } = await this.supabase
+        .from('server_settings')
+        .select('*')
+        .eq('guild_id', guildId)
+        .maybeSingle();
 
-    if (fetchError) {
-      throw new Error(`Failed reading server_settings: ${fetchError.message}`);
-    }
+      if (fetchError) {
+        throw new Error(`Failed reading server_settings: ${fetchError.message}`);
+      }
 
-    if (existing) {
-      return this.mapServerSettingsRow(existing as Record<string, unknown>, defaultModel);
-    }
+      if (existing) {
+        return this.mapServerSettingsRow(existing as Record<string, unknown>, defaultModel);
+      }
 
-    const initialAi = AiSettingsSchema.parse({ model: defaultModel });
-    const { data: created, error: insertError } = await this.supabase
-      .from('server_settings')
-      .upsert(
-        {
-          guild_id: guildId,
-          ai_settings: initialAi,
-        },
-        { onConflict: 'guild_id' }
-      )
-      .select('*')
-      .single();
+      const initialAi = AiSettingsSchema.parse({ model: defaultModel });
+      const { data: created, error: insertError } = await this.supabase
+        .from('server_settings')
+        .upsert(
+          {
+            guild_id: guildId,
+            ai_settings: initialAi,
+          },
+          { onConflict: 'guild_id' }
+        )
+        .select('*')
+        .single();
 
-    if (insertError || !created) {
-      throw new Error(`Failed initializing server_settings: ${insertError?.message}`);
-    }
+      if (insertError || !created) {
+        throw new Error(`Failed initializing server_settings: ${insertError?.message}`);
+      }
 
-    return this.mapServerSettingsRow(created as Record<string, unknown>, defaultModel);
+      return this.mapServerSettingsRow(created as Record<string, unknown>, defaultModel);
+    });
   }
 
   async getCategoryConfigs(guildId: string): Promise<CategoryConfig[]> {
-    const { data, error } = await this.supabase
-      .from('ticket_category_configs')
-      .select('*')
-      .eq('guild_id', guildId)
-      .order('category_name', { ascending: true });
+    return this.withRetry(async () => {
+      const { data, error } = await this.supabase
+        .from('ticket_category_configs')
+        .select('*')
+        .eq('guild_id', guildId)
+        .order('category_name', { ascending: true });
 
-    if (error) {
-      throw new Error(`Failed reading ticket_category_configs: ${error.message}`);
-    }
+      if (error) {
+        throw new Error(`Failed reading ticket_category_configs: ${error.message}`);
+      }
 
-    return (data ?? []).map((row: Record<string, unknown>) => {
-      // Use published_snapshot when available so unpublished draft edits don't leak prematurely
-      if (row.published_snapshot && typeof row.published_snapshot === 'object') {
+      return (data ?? []).map((row: Record<string, unknown>) => {
+        // Use published_snapshot when available so unpublished draft edits don't leak prematurely
+        if (row.published_snapshot && typeof row.published_snapshot === 'object') {
+          return CategoryConfigSchema.parse({
+            ...(row.published_snapshot as Record<string, unknown>),
+            id: row.id,
+            guildId: row.guild_id,
+            categoryId: row.category_id,
+            configVersion: Number(row.config_version ?? 1),
+          });
+        }
+
         return CategoryConfigSchema.parse({
-          ...(row.published_snapshot as Record<string, unknown>),
           id: row.id,
           guildId: row.guild_id,
           categoryId: row.category_id,
+          categoryName: row.category_name,
+          enabled: row.enabled,
+          welcomeMessage: row.welcome_message,
+          categoryInstructions: row.category_instructions ?? '',
+          faqs: row.faqs ?? [],
+          questions: row.questions ?? [],
+          playerLookupEnabled: row.player_lookup_enabled ?? false,
+          reportChannelOverrideId: row.report_channel_override_id ?? '',
           configVersion: Number(row.config_version ?? 1),
         });
-      }
-
-      return CategoryConfigSchema.parse({
-        id: row.id,
-        guildId: row.guild_id,
-        categoryId: row.category_id,
-        categoryName: row.category_name,
-        enabled: row.enabled,
-        welcomeMessage: row.welcome_message,
-        categoryInstructions: row.category_instructions ?? '',
-        faqs: row.faqs ?? [],
-        questions: row.questions ?? [],
-        playerLookupEnabled: row.player_lookup_enabled ?? false,
-        reportChannelOverrideId: row.report_channel_override_id ?? '',
-        configVersion: Number(row.config_version ?? 1),
       });
     });
   }
@@ -458,17 +481,19 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
   }
 
   async listActiveTicketSessions(guildId: string): Promise<TicketSessionRecord[]> {
-    const { data, error } = await this.supabase
-      .from('ticket_sessions')
-      .select('*')
-      .eq('guild_id', guildId)
-      .neq('status', 'closing');
+    return this.withRetry(async () => {
+      const { data, error } = await this.supabase
+        .from('ticket_sessions')
+        .select('*')
+        .eq('guild_id', guildId)
+        .neq('status', 'closing');
 
-    if (error) {
-      throw new Error(`Failed listing active sessions: ${error.message}`);
-    }
+      if (error) {
+        throw new Error(`Failed listing active sessions: ${error.message}`);
+      }
 
-    return (data ?? []).map((r) => this.mapSessionRow(r as Record<string, unknown>));
+      return (data ?? []).map((r) => this.mapSessionRow(r as Record<string, unknown>));
+    });
   }
 
   async updateTicketSession(
@@ -569,27 +594,32 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
     };
   }
 
-  async listTicketMessages(sessionId: string): Promise<TicketMessageRecord[]> {
-    const { data, error } = await this.supabase
-      .from('ticket_messages')
-      .select('*')
-      .eq('session_id', sessionId)
-      .order('created_at', { ascending: true });
+  async listTicketMessages(sessionId: string, maxRecent = 25): Promise<TicketMessageRecord[]> {
+    const boundedLimit = Math.min(Math.max(maxRecent, 1), 50);
+    return this.withRetry(async () => {
+      const { data, error } = await this.supabase
+        .from('ticket_messages')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(boundedLimit);
 
-    if (error) {
-      throw new Error(`Failed reading ticket_messages: ${error.message}`);
-    }
+      if (error) {
+        throw new Error(`Failed reading ticket_messages: ${error.message}`);
+      }
 
-    return (data ?? []).map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      sessionId: String(r.session_id),
-      discordMessageId: (r.discord_message_id as string | null) ?? null,
-      senderType: r.sender_type as TicketMessageRecord['senderType'],
-      senderDiscordId: (r.sender_discord_id as string | null) ?? null,
-      content: String(r.content),
-      redacted: Boolean(r.redacted),
-      createdAt: String(r.created_at),
-    }));
+      const rows = (data ?? []).slice().reverse();
+      return rows.map((r: Record<string, unknown>) => ({
+        id: String(r.id),
+        sessionId: String(r.session_id),
+        discordMessageId: (r.discord_message_id as string | null) ?? null,
+        senderType: r.sender_type as TicketMessageRecord['senderType'],
+        senderDiscordId: (r.sender_discord_id as string | null) ?? null,
+        content: String(r.content),
+        redacted: Boolean(r.redacted),
+        createdAt: String(r.created_at),
+      }));
+    });
   }
 
   async upsertTicketAnswer(input: {
@@ -1057,8 +1087,10 @@ export class InMemoryBotRepository implements BotDatabaseRepository {
     return { message: structuredClone(msg), duplicate: false };
   }
 
-  async listTicketMessages(sessionId: string): Promise<TicketMessageRecord[]> {
-    return (this.messages.get(sessionId) ?? []).map((m) => structuredClone(m));
+  async listTicketMessages(sessionId: string, maxRecent = 25): Promise<TicketMessageRecord[]> {
+    const all = this.messages.get(sessionId) ?? [];
+    const bounded = all.slice(-Math.min(Math.max(maxRecent, 1), 50));
+    return bounded.map((m) => structuredClone(m));
   }
 
   async upsertTicketAnswer(input: {

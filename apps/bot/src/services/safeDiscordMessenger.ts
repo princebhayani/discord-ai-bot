@@ -2,6 +2,7 @@ import {
   ChannelType,
   Client,
   GatewayIntentBits,
+  Options,
   type APIEmbed,
   type MessageCreateOptions,
   type TextChannel,
@@ -18,9 +19,48 @@ export const ALLOWED_GATEWAY_INTENTS: readonly GatewayIntentBits[] = [
   GatewayIntentBits.MessageContent,
 ] as const;
 
+/**
+ * Creates a low-memory Discord Gateway observer client optimized for constrained Free-tier
+ * hosting (e.g., Render Free 256 MB - 512 MB). Disables member, message, user, reaction,
+ * and presence caches while keeping guild/channel metadata needed for ticket observation.
+ */
 export function createTicketObserverClient(): Client {
   return new Client({
     intents: [...ALLOWED_GATEWAY_INTENTS],
+    makeCache: Options.cacheWithLimits({
+      ...Options.DefaultMakeCacheSettings,
+      MessageManager: 0,
+      GuildMemberManager: {
+        maxSize: 1,
+        keepOverLimit: (member) => member.id === member.client.user.id,
+      },
+      UserManager: {
+        maxSize: 1,
+        keepOverLimit: (user) => user.id === user.client.user.id,
+      },
+      PresenceManager: 0,
+      ReactionManager: 0,
+      ReactionUserManager: 0,
+      VoiceStateManager: 0,
+      GuildInviteManager: 0,
+      GuildBanManager: 0,
+      GuildEmojiManager: 0,
+      BaseGuildEmojiManager: 0,
+      GuildStickerManager: 0,
+      GuildScheduledEventManager: 0,
+      StageInstanceManager: 0,
+      AutoModerationRuleManager: 0,
+      ThreadMemberManager: 0,
+      ApplicationCommandManager: 0,
+      EntitlementManager: 0,
+    }),
+    sweepers: {
+      ...Options.DefaultSweeperSettings,
+      threads: {
+        interval: 600,
+        lifetime: 1800,
+      },
+    },
   });
 }
 
@@ -226,6 +266,7 @@ export class DiscordjsSafeMessenger implements DiscordMessenger {
 
     const fetched = await (channel as TextChannel | ThreadChannel).messages.fetch({
       limit: Math.min(Math.max(limit, 1), 50),
+      cache: false,
     });
 
     return Array.from(fetched.values())

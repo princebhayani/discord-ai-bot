@@ -9,6 +9,28 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 40,
 };
 
+export interface MemoryUsageSnapshot {
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb: number;
+  externalMb: number;
+}
+
+/**
+ * Returns numeric-only Node.js process memory metrics in megabytes.
+ * Never includes message contents, transcripts, or sensitive player data.
+ */
+export function getMemoryUsageMb(): MemoryUsageSnapshot {
+  const mem = process.memoryUsage();
+  const toMb = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  return {
+    rssMb: toMb(mem.rss),
+    heapUsedMb: toMb(mem.heapUsed),
+    heapTotalMb: toMb(mem.heapTotal),
+    externalMb: toMb(mem.external),
+  };
+}
+
 export class Logger {
   private readonly minPriority: number;
 

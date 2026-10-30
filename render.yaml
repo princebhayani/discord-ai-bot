@@ -1,0 +1,39 @@
+# ==============================================================================
+# Render Blueprint — Discord Ticket AI Conversation Assistant (Free Web Service)
+# ==============================================================================
+# Deploys ONE Node.js Free Web Service running BOTH:
+#   1. The Discord Gateway AI Ticket Conversation Assistant (@hrbot/bot)
+#   2. The built-in Node.js HTTP health & readiness server (/healthz, /readyz)
+#
+# Secrets marked `sync: false` are prompted securely in the Render Dashboard and
+# are never committed to source control. Render automatically injects `PORT`.
+# ==============================================================================
+
+services:
+  - type: web
+    name: discord-ticket-ai-bot
+    runtime: node
+    plan: free
+    healthCheckPath: /healthz
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
+    startCommand: pnpm --filter @hrbot/bot start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+
