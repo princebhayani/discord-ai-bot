@@ -15,11 +15,13 @@ services:
     runtime: node
     plan: free
     healthCheckPath: /healthz
-    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
+    buildCommand: COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
     startCommand: pnpm --filter @hrbot/bot start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: COREPACK_ENABLE_DOWNLOAD_PROMPT
+        value: "0"
       - key: LOG_LEVEL
         value: info
       - key: GROQ_MODEL

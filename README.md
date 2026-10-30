@@ -175,9 +175,9 @@ You can create the service either via **Render Blueprint** (`render.yaml`) or ma
 ### 5. Configuring the Build Command
 Set **Build Command** to:
 ```bash
-corepack enable && pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
+COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
 ```
-*(Why `--prod=false` and `--filter`? When `NODE_ENV=production` is set, `--prod=false` ensures root TypeScript compiler `devDependencies` are installed for compilation, while `--filter` skips installing heavy Next.js dashboard packages on the bot container.)*
+*(Note: Do **not** include `corepack enable` on Render — Render pre-installs the Corepack `pnpm` shim at `/usr/bin/pnpm` on a read-only filesystem and automatically reads `"packageManager"` from `package.json`. `--prod=false` installs TypeScript `devDependencies` for compilation, and `--filter` skips Next.js dashboard packages.)*
 
 ### 6. Configuring the Start Command
 Set **Start Command** to:

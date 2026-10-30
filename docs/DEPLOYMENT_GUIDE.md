@@ -96,7 +96,7 @@ git push -u origin main
    - **Plan:** `Free` (single instance — never run 2 instances on one bot token)
    - **Build Command:**
      ```bash
-     corepack enable && pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
+     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
      ```
    - **Start Command:**
      ```bash
