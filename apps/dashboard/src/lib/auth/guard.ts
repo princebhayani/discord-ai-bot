@@ -1,9 +1,10 @@
 import 'server-only';
+import type { User } from '@supabase/supabase-js';
 import { redirect } from 'next/navigation';
 import {
   createSupabaseServiceClient,
   createSupabaseSsrClient,
-  isSupabaseConfigured,
+  getMissingSupabaseEnvVars,
 } from '../supabase/server';
 
 export interface VerifiedModeratorContext {
@@ -16,8 +17,80 @@ export interface VerifiedModeratorContext {
 }
 
 export function getTargetGuildId(): string {
-  const guildId = process.env.DEFAULT_GUILD_ID ?? process.env.DISCORD_GUILD_ID ?? '';
+  const guildId = process.env.DISCORD_GUILD_ID ?? process.env.DEFAULT_GUILD_ID ?? '';
   return guildId.trim();
+}
+
+/**
+ * Resolves the target Discord Guild ID from env (DISCORD_GUILD_ID / DEFAULT_GUILD_ID),
+ * or auto-discovers it from Supabase when a single guild is configured in `server_settings`
+ * or `dashboard_admins` so single-server deployments don't need extra Vercel env vars.
+ */
+async function resolveGuildId(): Promise<string> {
+  const fromEnv = getTargetGuildId();
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  try {
+    const serviceClient = createSupabaseServiceClient();
+    const { data: settingsRows } = await serviceClient
+      .from('server_settings')
+      .select('guild_id')
+      .limit(2);
+
+    if (settingsRows && settingsRows.length === 1 && settingsRows[0]?.guild_id) {
+      return String(settingsRows[0].guild_id).trim();
+    }
+
+    const { data: adminRows } = await serviceClient
+      .from('dashboard_admins')
+      .select('guild_id')
+      .eq('active', true)
+      .limit(20);
+
+    const uniqueAdminGuilds = Array.from(
+      new Set(
+        (adminRows ?? [])
+          .map((r) => String((r as Record<string, unknown>).guild_id ?? '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (uniqueAdminGuilds.length === 1 && uniqueAdminGuilds[0]) {
+      return uniqueAdminGuilds[0];
+    }
+  } catch {
+    // Fall through to empty string if DB query fails
+  }
+
+  return '';
+}
+
+/**
+ * Extracts the 15-22 digit Discord Snowflake User ID from Supabase Auth v2 user object.
+ * Never returns `identity.id` (which is Supabase's internal UUID in GoTrue v2).
+ */
+export function extractDiscordSnowflakeId(user: User): string {
+  const discordIdentity = user.identities?.find((id) => id.provider === 'discord');
+  const identityRecord = (discordIdentity ?? {}) as unknown as Record<string, unknown>;
+  const identityData =
+    (discordIdentity?.identity_data as Record<string, unknown> | undefined) ?? {};
+  const metadata = (user.user_metadata as Record<string, unknown> | undefined) ?? {};
+
+  const candidates = [
+    identityRecord.provider_id,
+    identityData.provider_id,
+    identityData.sub,
+    identityData.id,
+    metadata.provider_id,
+    metadata.sub,
+  ]
+    .map((v) => (typeof v === 'string' || typeof v === 'number' ? String(v).trim() : ''))
+    .filter(Boolean);
+
+  // Prefer strict numeric Discord Snowflake IDs (15-22 digits) over any UUID strings
+  const snowflake = candidates.find((c) => /^\d{15,22}$/.test(c));
+  return snowflake ?? candidates[0] ?? '';
 }
 
 async function fetchDiscordMemberRoles(
@@ -57,15 +130,18 @@ export async function verifyDashboardModerator(): Promise<
       authorized: false;
       reason: 'unconfigured' | 'unauthenticated' | 'forbidden';
       message: string;
+      missingVars?: string[];
+      discordUserId?: string;
+      guildId?: string;
     }
 > {
-  const guildId = getTargetGuildId();
-  if (!isSupabaseConfigured() || !guildId) {
+  const missingVars = getMissingSupabaseEnvVars();
+  if (missingVars.length > 0) {
     return {
       authorized: false,
       reason: 'unconfigured',
-      message:
-        'Supabase environment variables (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY) and DEFAULT_GUILD_ID must be configured.',
+      missingVars,
+      message: `Missing required Vercel environment variables: ${missingVars.join(', ')}`,
     };
   }
 
@@ -83,17 +159,24 @@ export async function verifyDashboardModerator(): Promise<
     };
   }
 
-  const discordIdentity = user.identities?.find((id) => id.provider === 'discord');
-  const metadata = user.user_metadata ?? {};
-  const discordUserId = String(
-    discordIdentity?.id ?? metadata.provider_id ?? metadata.sub ?? ''
-  ).trim();
-
+  const discordUserId = extractDiscordSnowflakeId(user);
   if (!discordUserId) {
     return {
       authorized: false,
       reason: 'forbidden',
       message: 'Your account is not linked to a verified Discord OAuth2 identity.',
+    };
+  }
+
+  const guildId = await resolveGuildId();
+  if (!guildId) {
+    return {
+      authorized: false,
+      reason: 'unconfigured',
+      missingVars: ['DISCORD_GUILD_ID'],
+      discordUserId,
+      message:
+        'No Discord Guild ID found. Either seed `server_settings` in Supabase SQL Editor or set `DISCORD_GUILD_ID` on Vercel.',
     };
   }
 
@@ -108,7 +191,9 @@ export async function verifyDashboardModerator(): Promise<
     return {
       authorized: false,
       reason: 'forbidden',
-      message: 'Unable to verify moderator allowlist in Supabase.',
+      discordUserId,
+      guildId,
+      message: `Unable to read dashboard_admins in Supabase (${dbErr.message}). Make sure SQL migrations 0001 and 0002 have been executed.`,
     };
   }
 
@@ -117,7 +202,8 @@ export async function verifyDashboardModerator(): Promise<
   // 1. Direct Discord User ID or Supabase User ID match
   const directMatch = entries.find(
     (row) =>
-      row.discord_user_id === discordUserId || row.supabase_user_id === user.id
+      String(row.discord_user_id ?? '').trim() === discordUserId ||
+      row.supabase_user_id === user.id
   );
 
   let matchedRow = directMatch;
@@ -139,18 +225,23 @@ export async function verifyDashboardModerator(): Promise<
     return {
       authorized: false,
       reason: 'forbidden',
-      message: `Discord user ID ${discordUserId} is not on the approved moderator/role allowlist for guild ${guildId}.`,
+      discordUserId,
+      guildId,
+      message: `Discord User ID ${discordUserId} is not on the approved dashboard_admins allowlist for server ${guildId}.`,
     };
   }
 
   // Link supabase_user_id on first verified login for fast RLS checks
-  if (matchedRow.discord_user_id === discordUserId && !matchedRow.supabase_user_id) {
+  if (String(matchedRow.discord_user_id ?? '').trim() === discordUserId && !matchedRow.supabase_user_id) {
     await serviceClient
       .from('dashboard_admins')
       .update({ supabase_user_id: user.id })
       .eq('id', matchedRow.id);
   }
 
+  const metadata = (user.user_metadata as Record<string, unknown> | undefined) ?? {};
+  const customClaims =
+    (metadata.custom_claims as Record<string, unknown> | undefined) ?? {};
   const perm = String(matchedRow.permission_level ?? 'moderator');
   const permissionLevel: VerifiedModeratorContext['permissionLevel'] =
     perm === 'owner' || perm === 'admin' ? perm : 'moderator';
@@ -161,7 +252,7 @@ export async function verifyDashboardModerator(): Promise<
       supabaseUserId: user.id,
       discordUserId,
       username: String(
-        metadata.full_name ?? metadata.name ?? metadata.custom_claims?.global_name ?? 'Moderator'
+        metadata.full_name ?? metadata.name ?? customClaims.global_name ?? 'Moderator'
       ),
       avatarUrl: typeof metadata.avatar_url === 'string' ? metadata.avatar_url : null,
       guildId,
@@ -174,8 +265,16 @@ export async function requireDashboardModerator(): Promise<VerifiedModeratorCont
   const check = await verifyDashboardModerator();
   if (!check.authorized) {
     const params = new URLSearchParams({ reason: check.reason });
+    if (check.missingVars && check.missingVars.length > 0) {
+      params.set('missing', check.missingVars.join(', '));
+    }
+    if (check.discordUserId) {
+      params.set('uid', check.discordUserId);
+    }
+    if (check.guildId) {
+      params.set('gid', check.guildId);
+    }
     redirect(`/login?${params.toString()}`);
   }
   return check.moderator;
 }
-

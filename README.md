@@ -302,16 +302,17 @@ Please keep these operational realities in mind when running on free-tier infras
 
 1. Import the GitHub repository into Vercel and set the **Root Directory** to `apps/dashboard`.
 2. Vercel automatically uses `apps/dashboard/vercel.json` (`pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/dashboard build`).
-3. Configure environment variables in Vercel:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `SUPABASE_URL`
-   - `SUPABASE_SECRET_KEY` *(or `SUPABASE_SERVICE_ROLE_KEY` — server-only, never prefix with `NEXT_PUBLIC_`)*
-   - `GROQ_API_KEY` *(Server-only)*
-   - `GROQ_MODEL`
-   - `DEFAULT_GUILD_ID`
-   - `DASHBOARD_DISCORD_BOT_TOKEN` *(Optional, server-only — used if matching allowlisted Discord Guild Role IDs)*
-4. **Never** deploy the persistent Discord Gateway bot as a Vercel Serverless Function.
+3. Configure **only 3 required** environment variables in Vercel (all auth & DB calls run server-side, so no `NEXT_PUBLIC_` duplicates are required):
+   - `SUPABASE_URL` *(Your Supabase Project URL)*
+   - `SUPABASE_ANON_KEY` *(Your Supabase `anon` / `publishable` key)*
+   - `SUPABASE_SECRET_KEY` *(Your Supabase `secret` / `service_role` key — server-only)*
+   - *(Optional)* `DISCORD_GUILD_ID` *(Auto-detected from `server_settings` when running a single server; set explicitly if managing multiple guilds)*
+   - *(Optional)* `GROQ_API_KEY` *(Only if fetching live model lists from Groq API instead of the built-in catalog)*
+   - *(Optional)* `DASHBOARD_DISCORD_BOT_TOKEN` *(Only if matching allowlisted Discord Role IDs instead of Discord User IDs)*
+4. In **Supabase -> Authentication -> URL Configuration**:
+   - Set **Site URL** to `https://your-dashboard.vercel.app`
+   - Under **Redirect URLs**, add `https://your-dashboard.vercel.app/auth/callback`
+5. **Never** deploy the persistent Discord Gateway bot as a Vercel Serverless Function.
 
 ---
 

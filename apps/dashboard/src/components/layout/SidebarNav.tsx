@@ -13,7 +13,6 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 
 const NAV_ITEMS = [
@@ -38,8 +37,7 @@ export function SidebarNav({
   const router = useRouter();
 
   async function handleSignOut() {
-    const supabase = createSupabaseBrowserClient();
-    await supabase.auth.signOut();
+    await fetch('/auth/logout', { method: 'POST' });
     router.push('/login');
     router.refresh();
   }

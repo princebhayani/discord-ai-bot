@@ -1,99 +1,162 @@
-# End-to-End Production Deployment Guide (Render Free + UptimeRobot + Vercel + Supabase)
+# Complete End-to-End Deployment Guide (Render Free + Vercel + Supabase + Groq + UptimeRobot)
 
-This guide walks through deploying the complete **AI-Powered Discord Ticket Conversation Assistant** on 100% free-tier infrastructure across **Discord**, **Groq**, **Supabase**, **GitHub**, **Vercel** (Next.js Dashboard), **Render Free Web Service** (Discord AI Bot + built-in `/healthz` HTTP server), and **UptimeRobot Free** (5-minute external monitor).
+This guide covers every step in exact order to deploy both the **Discord AI Ticket Assistant (`@hrbot/bot`)** on **Render Free** and the **Moderator Dashboard (`@hrbot/dashboard`)** on **Vercel Hobby**, with **only 3 required environment variables on Vercel**.
 
 ---
 
-## Deployment Sequence Overview
+## Architecture & Free-Tier Stack
 
 ```mermaid
 flowchart LR
-    D["1. Discord Portal\nBot + Least-Privilege Invite"] --> G["2. Groq Console\nAPI Key + Model"]
-    G --> S["3. Supabase\nSQL Migrations + RLS + OAuth2"]
-    S --> GH["4. GitHub\nPush Monorepo + render.yaml"]
-    GH --> V["5. Vercel\nDeploy apps/dashboard"]
-    V --> S2["5b. Supabase URL Config\nAdd Vercel Callback URL"]
-    GH --> RF["6. Render Free Web Service\nDeploy Bot + /healthz"]
-    RF --> UR["7. UptimeRobot Free\n5-Minute /healthz Monitor"]
-    S2 --> CFG["8. Dashboard Setup\nCategories + Questions + Reports"]
-    UR --> CFG
-    CFG --> TEST["9. Live Smoke Test\nOpen & Close Real Ticket"]
+    D["1. Discord Portal\nBot Token + OAuth2 Secret"] --> G["2. Groq Console\nAPI Key"]
+    G --> S["3. Supabase\nSQL + Discord OAuth2"]
+    S --> GH["4. GitHub\nPush Latest Code"]
+    GH --> V["5. Vercel (3 Env Vars)\nDeploy apps/dashboard"]
+    V --> S2["6. Supabase URL Config\nAdd Vercel Callback URL"]
+    GH --> RF["7. Render Free Web Service\nDeploy Bot + /healthz"]
+    RF --> UR["8. UptimeRobot Free\n5-Minute /healthz Monitor"]
+    S2 --> LOGIN["9. Sign In & Configure\nCategories + Questions"]
+    UR --> LOGIN
 ```
 
 ---
 
-## Step 1: Discord Developer Portal Setup
+## Step 1: Discord Developer Portal (Bot + OAuth2 Redirect)
 
-> [!IMPORTANT]
-> Create a **new** Discord Application for this AI Assistant (**Bot 2**). Do **not** reuse the bot token of your existing Ticket Management Bot (**Bot 1**).
-
-1. Go to https://discord.com/developers/applications and click **New Application** (e.g., `Support AI Assistant`).
-2. Copy the **Application ID** from **General Information** — this is your `DISCORD_CLIENT_ID`.
-3. Open **OAuth2** and copy the **Client Secret** (for Supabase Discord login in Step 3).
-4. Open **Bot**:
-   - Click **Reset Token** and copy your **Bot Token** -> `DISCORD_BOT_TOKEN`.
-   - Under **Privileged Gateway Intents**, toggle **Message Content Intent** **ON** (leave *Presence Intent* and *Server Members Intent* **OFF** to keep memory usage minimal).
-5. Invite the bot using the least-privilege OAuth2 URL (`274877991936`):
+1. Go to https://discord.com/developers/applications and select your **AI Assistant** application (create a separate app for **Bot 2** — never reuse your existing Ticket Bot's token).
+2. **General Information:**
+   - Copy **Application ID** -> save as `DISCORD_CLIENT_ID`.
+3. **OAuth2:**
+   - Copy **Client Secret** (click *Reset Secret* if you haven't copied it yet) -> save for Supabase in Step 3.
+   - *(Leave Redirects open — you will paste your Supabase callback URL here in Step 3.3!)*
+4. **Bot:**
+   - Copy **Token** (click *Reset Token* if needed) -> save as `DISCORD_BOT_TOKEN`.
+   - Scroll down to **Privileged Gateway Intents**:
+     - Turn **Message Content Intent** **ON**.
+     - Keep *Presence Intent* and *Server Members Intent* **OFF** (saves RAM on Render Free).
+   - Click **Save Changes**.
+5. **Invite Bot to Your Server (Least-Privilege Only):**
+   Open this URL in your browser (replace `YOUR_DISCORD_CLIENT_ID`):
    ```text
    https://discord.com/oauth2/authorize?client_id=YOUR_DISCORD_CLIENT_ID&scope=bot&permissions=274877991936
    ```
-6. Ensure your existing Ticket Bot's category/ticket template grants the AI Assistant's **Bot Role** `View Channel`, `Send Messages`, `Embed Links`, `Read Message History`, and `Send Messages in Threads` on eligible ticket categories, your staff report channel, and (if enabled) your player-data bot command channel.
+   - Make sure your existing Ticket Bot grants the AI Assistant's **Bot Role** `View Channel`, `Send Messages`, `Embed Links`, `Read Message History`, and `Send Messages in Threads` on your ticket categories and staff report channel.
+6. **Copy Your Discord IDs** (enable *User Settings -> Advanced -> Developer Mode* in Discord):
+   - Right-click your **Server icon** -> *Copy Server ID* -> `DISCORD_GUILD_ID`
+   - Right-click **your own profile** -> *Copy User ID* -> `YOUR_DISCORD_USER_ID`
 
 ---
 
-## Step 2: Groq Cloud API Key & Model
+## Step 2: Groq API Key
 
-1. Sign in to https://console.groq.com/keys and create an API key -> `GROQ_API_KEY`.
-2. Choose a supported production model from https://console.groq.com/docs/models (e.g., `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, or `llama-3.3-70b-versatile`) -> `GROQ_MODEL`.
-
----
-
-## Step 3: Supabase Database, RLS & Discord OAuth2
-
-1. Create a Free project at https://supabase.com/dashboard and copy:
-   - **Project URL** -> `SUPABASE_URL` & `NEXT_PUBLIC_SUPABASE_URL`
-   - **`anon` public key** -> `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - **Secret / `service_role` key** -> `SUPABASE_SECRET_KEY`
-2. In **SQL Editor**, run:
-   1. `supabase/migrations/0001_initial_schema.sql`
-   2. `supabase/migrations/0002_rls_and_cleanup.sql`
-   3. Seed your guild & owner access:
-      ```sql
-      INSERT INTO public.server_settings (guild_id, guild_name)
-      VALUES ('YOUR_DISCORD_GUILD_ID', 'Your Server Name')
-      ON CONFLICT (guild_id) DO NOTHING;
-
-      INSERT INTO public.dashboard_admins (guild_id, discord_user_id, label, permission_level)
-      VALUES ('YOUR_DISCORD_GUILD_ID', 'YOUR_DISCORD_USER_ID', 'Primary Owner', 'owner');
-      ```
-3. Enable **Discord** under **Authentication -> Providers**, paste your Discord Client ID & Secret, and add Supabase's callback URL (`https://<project-ref>.supabase.co/auth/v1/callback`) to Discord Developer Portal -> **OAuth2 -> Redirects**.
+1. Go to https://console.groq.com/keys and click **Create API Key**.
+2. Copy the key (`gsk_...`) -> save as `GROQ_API_KEY`.
 
 ---
 
-## Step 4: Push Monorepo to GitHub
+## Step 3: Supabase Database & Discord Login Setup
+
+### 3.1 Copy Your 3 Supabase Credentials
+In https://supabase.com/dashboard, open your project -> **Project Settings -> API** (or **API Keys**) and copy:
+1. **Project URL** (`https://<project-ref>.supabase.co`) -> `SUPABASE_URL`
+2. **`anon` `public` key** (or **Publishable key**) -> `SUPABASE_ANON_KEY`
+3. **`service_role` `secret` key** (or **Secret key**) -> `SUPABASE_SECRET_KEY`
+
+### 3.2 Run SQL Migrations & Authorize Your Discord Account
+Open **SQL Editor -> New Query** in Supabase and run these **in order**:
+
+1. Paste all of `supabase/migrations/0001_initial_schema.sql` -> click **Run**.
+2. Paste all of `supabase/migrations/0002_rls_and_cleanup.sql` -> click **Run**.
+3. Run this query (replace `YOUR_DISCORD_GUILD_ID` with your 18-digit Server ID and `YOUR_DISCORD_USER_ID` with your personal 18-digit Discord User ID):
+   ```sql
+   INSERT INTO public.server_settings (guild_id, guild_name)
+   VALUES ('YOUR_DISCORD_GUILD_ID', 'My Discord Server')
+   ON CONFLICT (guild_id) DO NOTHING;
+
+   INSERT INTO public.dashboard_admins (guild_id, discord_user_id, label, permission_level)
+   VALUES ('YOUR_DISCORD_GUILD_ID', 'YOUR_DISCORD_USER_ID', 'Owner', 'owner');
+   ```
+
+### 3.3 Enable Discord OAuth2 in Supabase (CRITICAL FOR WEBSITE LOGIN!)
+1. In Supabase, go to **Authentication -> Providers -> Discord**.
+2. Toggle **Enable Sign in with Discord** **ON**.
+3. Paste:
+   - **Client ID:** Your `DISCORD_CLIENT_ID` from Step 1.2
+   - **Client Secret:** Your Discord OAuth2 **Client Secret** from Step 1.3
+4. Copy the **Callback URL (for OAuth)** shown by Supabase:
+   ```text
+   https://<your-project-ref>.supabase.co/auth/v1/callback
+   ```
+5. Click **Save** in Supabase.
+6. Go back to **Discord Developer Portal -> Your App -> OAuth2 -> Redirects**:
+   - Click **Add Redirect** and paste **`https://<your-project-ref>.supabase.co/auth/v1/callback`** *(Note: Discord redirects to **Supabase**, NOT directly to Vercel!)*
+   - Click **Save Changes**.
+
+---
+
+## Step 4: Push Latest Code to GitHub
+
+Push all latest fixes (the server-side Discord OAuth fix + Render `pnpm` build fix) to `main`:
 
 ```powershell
 git add .
-git commit -m "Configure Render Free Web Service & health server"
-git push -u origin main
+git commit -m "Fix dashboard Discord OAuth2 login, simplify Vercel env vars, and fix Render pnpm build"
+git push
 ```
 
 ---
 
-## Step 5: Deploy the Next.js Dashboard on Vercel
+## Step 5: Deploy Website Dashboard on Vercel (Only 3 Env Variables!)
 
-1. Import your GitHub repository at https://vercel.com/new with **Root Directory** set to `apps/dashboard`.
-2. Add environment variables: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `GROQ_API_KEY`, `GROQ_MODEL`, `DEFAULT_GUILD_ID`, and optional `DASHBOARD_DISCORD_BOT_TOKEN`.
-3. After deploy, add `https://your-dashboard.vercel.app/auth/callback` under **Supabase -> Authentication -> URL Configuration -> Redirect URLs**.
+1. Go to https://vercel.com/new (or open your existing Vercel project -> **Settings**).
+2. Confirm **General -> Root Directory** is set to:
+   ```text
+   apps/dashboard
+   ```
+3. Go to **Settings -> Environment Variables** — you **only need these 3 variables** (you can delete any extra ones you don't need, though keeping `NEXT_PUBLIC_SUPABASE_URL` / `DEFAULT_GUILD_ID` won't hurt):
+
+   | Variable Name | Value |
+   |---|---|
+   | `SUPABASE_URL` | `https://<your-project-ref>.supabase.co` |
+   | `SUPABASE_ANON_KEY` | Your Supabase `anon` / `publishable` key |
+   | `SUPABASE_SECRET_KEY` | Your Supabase `service_role` / `secret` key |
+
+   *(Optional — only needed in special cases:)*
+   - `DISCORD_GUILD_ID`: Only needed if you host multiple Discord servers in one database (otherwise auto-detected from `server_settings`!).
+   - `GROQ_API_KEY`: Optional; the dashboard already has a built-in Groq model catalog without needing the key on Vercel.
+   - `DASHBOARD_DISCORD_BOT_TOKEN`: Only needed if you allowlist Discord Role IDs instead of Discord User IDs.
+
+4. Trigger a **Redeploy** on Vercel (**Deployments -> Redeploy**) so the latest login code goes live, and copy your Vercel URL (e.g. `https://your-dashboard.vercel.app`).
 
 ---
 
-## Step 6: Deploy the Discord AI Bot on Render Free Web Service
+## Step 6: Connect Your Vercel URL in Supabase Auth (CRITICAL FOR WEBSITE LOGIN!)
 
-1. Sign in to https://dashboard.render.com/ and create **ONE** **Web Service** (via **New + -> Blueprint** using `render.yaml`, or **New + -> Web Service**).
-2. Configure:
+1. In Supabase, go to **Authentication -> URL Configuration**.
+2. Set **Site URL** to your exact Vercel URL (no trailing slash):
+   ```text
+   https://your-dashboard.vercel.app
+   ```
+3. Under **Redirect URLs**, click **Add URL** and add:
+   ```text
+   https://your-dashboard.vercel.app/auth/callback
+   ```
+   *(Optional: also add `https://*-your-vercel-team.vercel.app/auth/callback` or `http://localhost:3000/auth/callback` if testing previews/locally.)*
+4. Click **Save**.
+
+Now visit `https://your-dashboard.vercel.app/login` and click **Sign in with Discord** — it will redirect through Discord -> Supabase -> `/auth/callback` -> your Dashboard!
+*(If your Discord User ID wasn't in `dashboard_admins` yet, the login page will now display your exact Discord User ID and give you the exact 2-line SQL to copy-paste into Supabase!)*
+
+---
+
+## Step 7: Deploy Discord AI Bot on Render Free Web Service
+
+1. Go to https://dashboard.render.com/ -> create **one** **Web Service** (via **New + -> Blueprint** or **New + -> Web Service** connected to your GitHub repo).
+2. Verify **Settings -> Build & Deploy**:
    - **Runtime:** `Node`
-   - **Plan:** `Free` (single instance — never run 2 instances on one bot token)
+   - **Branch:** `main`
+   - **Root Directory:** *(leave blank)*
+   - **Instance Type:** `Free`
    - **Build Command:**
      ```bash
      COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile --prod=false --filter . --filter @hrbot/shared --filter @hrbot/bot && pnpm run build:bot
@@ -102,24 +165,62 @@ git push -u origin main
      ```bash
      pnpm --filter @hrbot/bot start
      ```
-   - **Health Check Path:** `/healthz`
-3. Add Environment Variables: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, `GROQ_API_KEY`, `GROQ_MODEL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `NODE_ENV=production`, `LOG_LEVEL=info` (Render sets `PORT` automatically).
-4. Once live, verify:
-   - `curl -i https://YOUR-RENDER-SERVICE.onrender.com/healthz` -> `200 OK` `{"status":"ok"}`
-   - `curl -i https://YOUR-RENDER-SERVICE.onrender.com/readyz` -> `200 OK` `{"status":"ready","discordConnected":true}`
+   - **Health Check Path:**
+     ```text
+     /healthz
+     ```
+3. Under **Environment**, add these variables:
+
+   | Key | Value |
+   |---|---|
+   | `DISCORD_BOT_TOKEN` | Your Discord Bot Token (Step 1.4) |
+   | `DISCORD_CLIENT_ID` | Your Discord Application ID (Step 1.2) |
+   | `DISCORD_GUILD_ID` | Your 18-digit Discord Server ID (Step 1.6) |
+   | `GROQ_API_KEY` | `gsk_...` (Step 2) |
+   | `GROQ_MODEL` | `openai/gpt-oss-20b` |
+   | `SUPABASE_URL` | `https://<your-project-ref>.supabase.co` |
+   | `SUPABASE_SECRET_KEY` | Your Supabase `service_role` / `secret` key |
+   | `NODE_ENV` | `production` |
+   | `COREPACK_ENABLE_DOWNLOAD_PROMPT` | `0` |
+   | `LOG_LEVEL` | `info` |
+
+   *(Do **not** set `PORT` manually — Render injects `PORT` automatically.)*
+
+4. Click **Manual Deploy -> Deploy latest commit**.
+5. Once Render shows **Live**, test your public Render URL (`https://YOUR-RENDER-SERVICE.onrender.com`):
+   - Open `https://YOUR-RENDER-SERVICE.onrender.com/healthz` -> returns `{"status":"ok"}` (`HTTP 200`).
+   - Open `https://YOUR-RENDER-SERVICE.onrender.com/readyz` -> returns `{"status":"ready","discordConnected":true}` (`HTTP 200`).
 
 ---
 
-## Step 7: Configure UptimeRobot Free (5-Minute Keep-Alive)
+## Step 8: Keep Render Awake with UptimeRobot Free
 
-1. Create a free account at https://uptimerobot.com/.
-2. Click **+ Add New Monitor**:
+1. Sign up free at https://uptimerobot.com/ and click **+ Add New Monitor**:
    - **Monitor Type:** `HTTP(s)`
    - **Friendly Name:** `Discord AI Bot Keep Alive`
    - **URL:** `https://YOUR-RENDER-SERVICE.onrender.com/healthz`
    - **Monitoring Interval:** `5 minutes`
    - **Expected Status:** `HTTP 200`
-3. Save the monitor and verify after 15+ minutes of zero other HTTP traffic that the Render service remains awake and connected to Discord.
+2. Click **Create Monitor**.
 
-> [!NOTE]
-> Free services may still restart during platform maintenance, have no uptime SLA, use an ephemeral filesystem, and remain subject to Render Free, UptimeRobot Free, Supabase Free, and Groq rate/usage limits. All active ticket sessions are persisted in Supabase so restarts recover cleanly without duplicate welcome messages.
+---
+
+## Step 9: Configure Categories & Questions in the Website Dashboard
+
+1. Sign in at `https://your-dashboard.vercel.app/login`.
+2. Confirm **Bot Worker Online** is green on **Overview**.
+3. **AI Settings:** Paste your **Existing Ticket Bot's Discord User ID** under *Existing Ticket Provider Bot User IDs* (or turn *Require Ticket Provider Bot Verification* OFF while testing) -> click **Publish**.
+4. **Report Settings:** Paste your existing **Staff Report Channel ID** -> click **Publish**.
+5. **Category Management:** Add your existing Discord Ticket Category ID, toggle **Enable AI in Category** ON -> click **Publish Category Version**.
+6. **Question Builder:** Add your intake questions and click **Publish Questionnaire**.
+
+---
+
+## Troubleshooting Website Login
+
+| What You See on `/login` | Cause & Instant Fix |
+|---|---|
+| **`Discord OAuth2 Sign-In Failed: Invalid Redirect URI`** (on Discord screen) | In **Discord Developer Portal -> OAuth2 -> Redirects**, make sure you added **`https://<project-ref>.supabase.co/auth/v1/callback`** (Supabase's callback URL, *not* Vercel's URL). |
+| **`Error getting user email from external provider`** | Fixed in code (`scopes: 'identify email'`). Also ensure your Discord account has a verified email address. |
+| **`Discord login succeeded as User ID ..., but your account is not yet in dashboard_admins`** | Copy the pre-filled 2-line `INSERT INTO public.dashboard_admins ...` SQL box shown right on the `/login` screen and run it in **Supabase -> SQL Editor**. |
+| **`Missing Dashboard Environment Variables`** | Check **Vercel -> Settings -> Environment Variables** and make sure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SECRET_KEY` are saved for **Production**, then click **Redeploy**. |
