@@ -211,15 +211,23 @@ export class ModeratorReportService {
     }
 
     // 2. Existing Private Ticket Thread Destination (ONLY if thread already exists & configured)
-    const shouldSendToExistingPrivateThread =
+    const observedChildStaffThreadId = this.sessionManager.getObservedStaffThreadId(
+      session.channelId
+    );
+    const candidatePrivateThreadId =
+      session.isThread && session.isPrivateThread
+        ? session.channelId
+        : observedChildStaffThreadId;
+
+    const shouldSendToExistingPrivateThread = Boolean(
       (reportSettings.destinationMode === 'existing_private_thread' ||
         reportSettings.destinationMode === 'both') &&
-      reportSettings.allowVerifiedPrivateThreadDestination &&
-      session.isThread &&
-      session.isPrivateThread;
+        reportSettings.allowVerifiedPrivateThreadDestination &&
+        candidatePrivateThreadId
+    );
 
-    if (shouldSendToExistingPrivateThread) {
-      const threadMeta = await this.messenger.fetchChannelMetadata(session.channelId);
+    if (shouldSendToExistingPrivateThread && candidatePrivateThreadId) {
+      const threadMeta = await this.messenger.fetchChannelMetadata(candidatePrivateThreadId);
       if (threadMeta.exists && threadMeta.isThread && threadMeta.isPrivateThread) {
         const playerIsParticipant = Boolean(
           session.playerDiscordId &&
@@ -231,12 +239,16 @@ export class ModeratorReportService {
           ? this.buildPlayerSafeSummaryEmbed(payload)
           : this.buildConfidentialStaffEmbed(payload, session);
 
-        const sentInThread = await this.messenger.sendMessage(session.channelId, {
+        const roleMentions = !playerIsParticipant
+          ? reportSettings.staffRoleIds.map((r) => `<@&${r}>`).join(' ')
+          : '';
+        const sentInThread = await this.messenger.sendMessage(candidatePrivateThreadId, {
+          content: roleMentions ? `${roleMentions} Ticket intake summary:` : undefined,
           embeds: [embedForThread],
         });
         if (!deliveredMessageId) {
           deliveredMessageId = sentInThread.messageId;
-          destinationUsed = session.channelId;
+          destinationUsed = candidatePrivateThreadId;
           deliveryStatus = 'delivered';
         }
       }

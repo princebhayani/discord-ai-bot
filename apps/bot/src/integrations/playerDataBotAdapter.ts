@@ -1,6 +1,7 @@
 import {
   LookupActionSchema,
   ParsedPlayerProfileSchema,
+  parseQuickDotCommands,
   type LookupAction,
   type ParsedPlayerProfile,
   type ParserConfig,
@@ -64,30 +65,45 @@ export function sanitizeLookupTarget(action: LookupAction, rawTarget: string): s
 }
 
 /**
- * Builds an approved external bot command strictly from configured templates.
+ * Builds an approved external bot command strictly from configured templates
+ * (supporting 1-line `quickCommandLine` definitions as well as explicit templates).
  */
 export function renderApprovedCommand(
   config: PlayerIntegrationConfig,
   action: LookupAction,
   sanitizedTarget: string
 ): string | null {
-  if (!config.supportedActions.includes(action)) {
+  let effectivePrefix = config.commandPrefix;
+  let effectiveSupported = config.supportedActions;
+  let effectiveTemplates = config.commandTemplates;
+
+  if (config.quickCommandLine && config.quickCommandLine.trim().length > 0) {
+    const parsedQuick = parseQuickDotCommands(config.quickCommandLine, config.commandPrefix);
+    if (parsedQuick.valid) {
+      effectivePrefix = parsedQuick.commandPrefix;
+      effectiveSupported = parsedQuick.supportedActions;
+      effectiveTemplates = parsedQuick.commandTemplates;
+    }
+  }
+
+  if (!effectiveSupported.includes(action)) {
     return null;
   }
 
-  const template = config.commandTemplates[action];
+  const template = effectiveTemplates[action];
   if (!template) {
     return null;
   }
 
   const rendered = template
-    .replace(/\{prefix\}/g, config.commandPrefix)
+    .replace(/\{prefix\}/g, effectivePrefix)
     .replace(/\{target\}/g, sanitizedTarget)
+    .replace(/\{tag\}/gi, sanitizedTarget)
     .replace(/\{player_tag\}/g, sanitizedTarget)
     .replace(/\{clan_name\}/g, sanitizedTarget)
     .trim();
 
-  if (rendered.includes('\n') || !rendered.startsWith(config.commandPrefix)) {
+  if (rendered.includes('\n') || !rendered.startsWith(effectivePrefix)) {
     return null;
   }
 
@@ -355,15 +371,20 @@ export class PlayerDataBotAdapter {
       }
     }
 
-    // Option B: Approved Discord command channel integration
-    if (!config.executionChannelId || !config.externalBotUserId) {
+    // Option B: Approved Discord command channel integration (dedicated channel OR current ticket channel)
+    const targetExecutionChannelId =
+      config.executionChannelMode === 'ticket_channel'
+        ? session.channelId
+        : config.executionChannelId;
+
+    if (!targetExecutionChannelId || !config.externalBotUserId) {
       return this.repo.createPlayerLookup({
         sessionId: session.id,
         actionType: action,
         queryTarget: sanitizedTarget,
         approvedCommand,
         status: 'unsupported',
-        errorReason: 'executionChannelId or externalBotUserId is not configured',
+        errorReason: 'targetExecutionChannelId or externalBotUserId is not configured',
       });
     }
 
@@ -392,7 +413,7 @@ export class PlayerDataBotAdapter {
       const waiter: PendingLookupWaiter = {
         lookupId: lookupRec.id,
         sessionId: session.id,
-        executionChannelId: config.executionChannelId,
+        executionChannelId: targetExecutionChannelId,
         expectedExternalBotId: config.externalBotUserId,
         queryTarget: sanitizedTarget,
         parserConfig: config.parserConfig,
@@ -417,7 +438,7 @@ export class PlayerDataBotAdapter {
     });
 
     try {
-      const sentCmd = await this.messenger.sendMessage(config.executionChannelId, {
+      const sentCmd = await this.messenger.sendMessage(targetExecutionChannelId, {
         content: approvedCommand,
       });
       await this.repo.updatePlayerLookup(lookupRec.id, {

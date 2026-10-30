@@ -3,6 +3,8 @@ import {
   Client,
   GatewayIntentBits,
   Options,
+  OverwriteType,
+  PermissionFlagsBits,
   type APIEmbed,
   type MessageCreateOptions,
   type TextChannel,
@@ -78,6 +80,8 @@ export interface NormalizedDiscordMessage {
   authorId: string;
   authorUsername: string;
   authorBot: boolean;
+  authorRoleIds?: string[];
+  authorHasModeratorPermissions?: boolean;
   content: string;
   embeds: NormalizedDiscordEmbed[];
   mentionsUserIds: string[];
@@ -92,12 +96,15 @@ export interface ObservedChannelMetadata {
   topic: string | null;
   categoryId: string | null;
   parentChannelId: string | null;
+  parentChannelName?: string | null;
   isThread: boolean;
   isPrivateThread: boolean;
   ownerId: string | null;
   archived: boolean;
   locked: boolean;
   memberIds?: string[];
+  permissionMemberIds?: string[];
+  nonAdminPermissionMemberIds?: string[];
 }
 
 export interface OutgoingMessagePayload {
@@ -196,6 +203,7 @@ export class DiscordjsSafeMessenger implements DiscordMessenger {
           topic: parent && 'topic' in parent ? parent.topic : null,
           categoryId: parent?.parentId ?? null,
           parentChannelId: thread.parentId,
+          parentChannelName: parent?.name ?? null,
           isThread: true,
           isPrivateThread: thread.type === ChannelType.PrivateThread,
           ownerId: thread.ownerId,
@@ -207,6 +215,35 @@ export class DiscordjsSafeMessenger implements DiscordMessenger {
 
       if (channel.type === ChannelType.GuildText) {
         const textChan = channel as TextChannel;
+        const permissionMemberIds: string[] = [];
+        const nonAdminPermissionMemberIds: string[] = [];
+        const botUserId = this.client.user?.id ?? null;
+
+        for (const overwrite of textChan.permissionOverwrites.cache.values()) {
+          if (
+            overwrite.type === OverwriteType.Member &&
+            overwrite.allow.has(PermissionFlagsBits.ViewChannel)
+          ) {
+            if (botUserId && overwrite.id === botUserId) continue;
+            const cachedUser = this.client.users.cache.get(overwrite.id);
+            if (cachedUser?.bot) continue;
+
+            permissionMemberIds.push(overwrite.id);
+            const cachedMember = textChan.guild.members.cache.get(overwrite.id);
+            const isMod = Boolean(
+              cachedMember?.permissions.has(
+                PermissionFlagsBits.Administrator |
+                  PermissionFlagsBits.ManageGuild |
+                  PermissionFlagsBits.ManageChannels |
+                  PermissionFlagsBits.ManageMessages
+              )
+            );
+            if (!isMod) {
+              nonAdminPermissionMemberIds.push(overwrite.id);
+            }
+          }
+        }
+
         return {
           exists: true,
           channelId: textChan.id,
@@ -215,11 +252,14 @@ export class DiscordjsSafeMessenger implements DiscordMessenger {
           topic: textChan.topic,
           categoryId: textChan.parentId,
           parentChannelId: null,
+          parentChannelName: null,
           isThread: false,
           isPrivateThread: false,
           ownerId: null,
           archived: false,
           locked: false,
+          permissionMemberIds,
+          nonAdminPermissionMemberIds,
         };
       }
 
@@ -271,23 +311,43 @@ export class DiscordjsSafeMessenger implements DiscordMessenger {
 
     return Array.from(fetched.values())
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-      .map((msg) => ({
-        id: msg.id,
-        channelId: msg.channelId,
-        guildId: msg.guildId,
-        authorId: msg.author.id,
-        authorUsername: msg.author.username,
-        authorBot: msg.author.bot,
-        content: msg.content,
-        embeds: msg.embeds.map((e) => ({
-          title: e.title,
-          description: e.description,
-          footerText: e.footer?.text ?? null,
-          fields: e.fields.map((f) => ({ name: f.name, value: f.value })),
-        })),
-        mentionsUserIds: Array.from(msg.mentions.users.keys()),
-        createdTimestamp: msg.createdTimestamp,
-      }));
+      .map((msg) => {
+        let authorRoleIds: string[] = [];
+        let authorHasModeratorPermissions = false;
+        try {
+          if (msg.member) {
+            authorRoleIds = Array.from(msg.member.roles.cache.keys());
+            authorHasModeratorPermissions = msg.member.permissions.has(
+              PermissionFlagsBits.Administrator |
+                PermissionFlagsBits.ManageGuild |
+                PermissionFlagsBits.ManageChannels |
+                PermissionFlagsBits.ManageMessages
+            );
+          }
+        } catch {
+          // Safe fallback for uncached member partials
+        }
+
+        return {
+          id: msg.id,
+          channelId: msg.channelId,
+          guildId: msg.guildId,
+          authorId: msg.author.id,
+          authorUsername: msg.author.username,
+          authorBot: msg.author.bot,
+          authorRoleIds,
+          authorHasModeratorPermissions,
+          content: msg.content,
+          embeds: msg.embeds.map((e) => ({
+            title: e.title,
+            description: e.description,
+            footerText: e.footer?.text ?? null,
+            fields: e.fields.map((f) => ({ name: f.name, value: f.value })),
+          })),
+          mentionsUserIds: Array.from(msg.mentions.users.keys()),
+          createdTimestamp: msg.createdTimestamp,
+        };
+      });
   }
 }
 

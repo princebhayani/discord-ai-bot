@@ -78,6 +78,7 @@ export class ConfigService {
       categoryConfigVersion: category.configVersion,
       guildName: serverSettings.guildName,
       welcomeMessage,
+      mentionUserOnWelcome: serverSettings.ticketDetectionConfig.mentionUserOnWelcome,
       category,
       aiSettings: {
         ...serverSettings.aiSettings,

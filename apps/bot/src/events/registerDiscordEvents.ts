@@ -1,6 +1,8 @@
 import {
   ChannelType,
   Events,
+  OverwriteType,
+  PermissionFlagsBits,
   type AnyThreadChannel,
   type Client,
   type Message,
@@ -29,12 +31,43 @@ function mapGuildChannelToMetadata(
       topic: channel.parent && 'topic' in channel.parent ? channel.parent.topic : null,
       categoryId: channel.parent?.parentId ?? null,
       parentChannelId: channel.parentId,
+      parentChannelName: channel.parent?.name ?? null,
       isThread: true,
       isPrivateThread: channel.type === ChannelType.PrivateThread,
       ownerId: channel.ownerId,
       archived: Boolean(channel.archived),
       locked: Boolean(channel.locked),
     };
+  }
+
+  const permissionMemberIds: string[] = [];
+  const nonAdminPermissionMemberIds: string[] = [];
+  if (channel.type === ChannelType.GuildText && 'permissionOverwrites' in channel) {
+    const botUserId = channel.client.user?.id ?? null;
+    for (const overwrite of channel.permissionOverwrites.cache.values()) {
+      if (
+        overwrite.type === OverwriteType.Member &&
+        overwrite.allow.has(PermissionFlagsBits.ViewChannel)
+      ) {
+        if (botUserId && overwrite.id === botUserId) continue;
+        const cachedUser = channel.client.users.cache.get(overwrite.id);
+        if (cachedUser?.bot) continue;
+
+        permissionMemberIds.push(overwrite.id);
+        const cachedMember = channel.guild.members.cache.get(overwrite.id);
+        const isMod = Boolean(
+          cachedMember?.permissions.has(
+            PermissionFlagsBits.Administrator |
+              PermissionFlagsBits.ManageGuild |
+              PermissionFlagsBits.ManageChannels |
+              PermissionFlagsBits.ManageMessages
+          )
+        );
+        if (!isMod) {
+          nonAdminPermissionMemberIds.push(overwrite.id);
+        }
+      }
+    }
   }
 
   return {
@@ -45,15 +78,34 @@ function mapGuildChannelToMetadata(
     topic: 'topic' in channel ? (channel.topic as string | null) : null,
     categoryId: channel.parentId,
     parentChannelId: null,
+    parentChannelName: null,
     isThread: false,
     isPrivateThread: false,
     ownerId: null,
     archived: false,
     locked: false,
+    permissionMemberIds,
+    nonAdminPermissionMemberIds,
   };
 }
 
 function mapDiscordMessage(msg: Message): NormalizedDiscordMessage {
+  let authorRoleIds: string[] = [];
+  let authorHasModeratorPermissions = false;
+  try {
+    if (msg.member) {
+      authorRoleIds = Array.from(msg.member.roles.cache.keys());
+      authorHasModeratorPermissions = msg.member.permissions.has(
+        PermissionFlagsBits.Administrator |
+          PermissionFlagsBits.ManageGuild |
+          PermissionFlagsBits.ManageChannels |
+          PermissionFlagsBits.ManageMessages
+      );
+    }
+  } catch {
+    // Ignore uncached partial member permission checks
+  }
+
   return {
     id: msg.id,
     channelId: msg.channelId,
@@ -61,6 +113,8 @@ function mapDiscordMessage(msg: Message): NormalizedDiscordMessage {
     authorId: msg.author.id,
     authorUsername: msg.author.username,
     authorBot: msg.author.bot,
+    authorRoleIds,
+    authorHasModeratorPermissions,
     content: msg.content,
     embeds: msg.embeds.map((e) => ({
       title: e.title,

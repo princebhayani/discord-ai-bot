@@ -1,7 +1,9 @@
-import type { CategoryConfig, ThreadClosurePolicy } from '@hrbot/shared';
+import type { CategoryConfig, ServerSettings, ThreadClosurePolicy } from '@hrbot/shared';
 import type { ConfigService } from '../config/configService.js';
 import {
   evaluateObservedTicketCandidate,
+  extractOpenerFromBotMessages,
+  resolveOpenerFromChannelMetadata,
   verifyProviderOpeningMessage,
 } from '../handlers/ticketDetector.js';
 import type { TicketQueueManager } from '../queues/ticketQueueManager.js';
@@ -39,9 +41,41 @@ export function isThreadConsideredClosed(
   }
 }
 
+export function formatWelcomeMessageWithUserTag(params: {
+  welcomeMessage: string;
+  playerDiscordId: string | null;
+  mentionUserOnWelcome: boolean;
+}): string {
+  const { welcomeMessage, playerDiscordId, mentionUserOnWelcome } = params;
+  const hasPlaceholder = /\{(?:user|mention)\}/i.test(welcomeMessage);
+
+  if (hasPlaceholder) {
+    if (mentionUserOnWelcome && playerDiscordId) {
+      return welcomeMessage.replace(/\{(?:user|mention)\}/gi, `<@${playerDiscordId}>`);
+    }
+    return welcomeMessage
+      .replace(/^\s*\{(?:user|mention)\}[,!\s]*/i, '')
+      .replace(/\s+\{(?:user|mention)\}/gi, '')
+      .trim();
+  }
+
+  if (mentionUserOnWelcome && playerDiscordId) {
+    if (
+      welcomeMessage.includes(`<@${playerDiscordId}>`) ||
+      welcomeMessage.includes(`<@!${playerDiscordId}>`)
+    ) {
+      return welcomeMessage;
+    }
+    return `<@${playerDiscordId}> ${welcomeMessage}`;
+  }
+
+  return welcomeMessage;
+}
+
 export class SessionManager {
   private readonly activeSessionsByChannel = new Map<string, TicketSessionRecord>();
   private readonly pendingCandidates = new Map<string, PendingCandidate>();
+  private readonly staffThreadsByTicketChannel = new Map<string, string>();
 
   constructor(
     private readonly guildId: string,
@@ -67,6 +101,11 @@ export class SessionManager {
   removeSessionFromMemory(channelId: string): void {
     this.activeSessionsByChannel.delete(channelId);
     this.pendingCandidates.delete(channelId);
+    this.staffThreadsByTicketChannel.delete(channelId);
+  }
+
+  getObservedStaffThreadId(ticketChannelId: string): string | null {
+    return this.staffThreadsByTicketChannel.get(ticketChannelId) ?? null;
   }
 
   /**
@@ -100,6 +139,7 @@ export class SessionManager {
   clearMemoryState(): void {
     this.activeSessionsByChannel.clear();
     this.pendingCandidates.clear();
+    this.staffThreadsByTicketChannel.clear();
   }
 
   async resolveActiveSession(channelId: string): Promise<TicketSessionRecord | null> {
@@ -130,6 +170,26 @@ export class SessionManager {
     this.pruneExpiredCandidates();
     if (this.activeSessionsByChannel.has(channel.channelId)) {
       return this.activeSessionsByChannel.get(channel.channelId) ?? null;
+    }
+
+    // Never start a player ticket session inside a child thread of an existing/pending ticket channel
+    if (channel.isThread && channel.parentChannelId) {
+      const parentIsTicket =
+        this.activeSessionsByChannel.has(channel.parentChannelId) ||
+        this.pendingCandidates.has(channel.parentChannelId) ||
+        Boolean(await this.repo.getTicketSessionByChannel(channel.parentChannelId));
+
+      if (parentIsTicket) {
+        if (channel.isPrivateThread) {
+          this.staffThreadsByTicketChannel.set(channel.parentChannelId, channel.channelId);
+        }
+        this.logger.debug('Ignored child thread inside active ticket channel', {
+          threadId: channel.channelId,
+          parentChannelId: channel.parentChannelId,
+          isPrivateThread: channel.isPrivateThread,
+        });
+        return null;
+      }
     }
 
     const { serverSettings, categoriesById } = await this.configService.getGuildConfiguration();
@@ -219,9 +279,93 @@ export class SessionManager {
     });
   }
 
+  private async resolveSingleTicketOpener(params: {
+    channel: ObservedChannelMetadata;
+    initialOpenerId: string | null;
+    serverSettings: ServerSettings;
+    signal: AbortSignal;
+  }): Promise<string | null> {
+    const { channel, initialOpenerId, serverSettings, signal } = params;
+    const ourBotId = this.messenger.getBotUserId();
+    const externalBotId = serverSettings.playerIntegrationConfig.externalBotUserId || null;
+    const knownBotIds = new Set<string>(
+      [
+        ourBotId,
+        externalBotId,
+        ...serverSettings.ticketDetectionConfig.providerBotIds,
+      ].filter((id): id is string => Boolean(id))
+    );
+    const staffUserIds = serverSettings.reportSettings.staffUserIds;
+
+    let candidateOpenerId =
+      initialOpenerId && !knownBotIds.has(initialOpenerId) ? initialOpenerId : null;
+
+    if (!candidateOpenerId) {
+      candidateOpenerId = resolveOpenerFromChannelMetadata({
+        channel,
+        knownBotIds,
+        staffUserIds,
+      });
+    }
+
+    try {
+      let recentMessages = await this.messenger.fetchRecentMessages(channel.channelId, 8);
+      const hasTicketBotOpeningPanel = recentMessages.some(
+        (m) => m.authorBot && m.authorId !== ourBotId && m.authorId !== externalBotId
+      );
+
+      // On live Discord channels, wait briefly if the ticket bot hasn't posted its opening panel yet
+      // so our welcome appears below the ticket panel AND captures `<@OPENER_ID>` reliably.
+      if (
+        !hasTicketBotOpeningPanel &&
+        channel.permissionMemberIds !== undefined &&
+        !signal.aborted
+      ) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 1400);
+          signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true }
+          );
+        });
+
+        if (!signal.aborted) {
+          recentMessages = await this.messenger.fetchRecentMessages(channel.channelId, 8);
+          if (!candidateOpenerId) {
+            const refreshedMeta = await this.messenger.fetchChannelMetadata(channel.channelId);
+            candidateOpenerId = resolveOpenerFromChannelMetadata({
+              channel: refreshedMeta,
+              knownBotIds,
+              staffUserIds,
+            });
+          }
+        }
+      }
+
+      const fromBotPanel = extractOpenerFromBotMessages({
+        messages: recentMessages,
+        knownBotIds,
+        ourBotUserId: ourBotId,
+        externalDataBotId: externalBotId,
+        staffUserIds,
+      });
+      if (fromBotPanel) {
+        return fromBotPanel;
+      }
+    } catch {
+      // Non-fatal fallback to channel overwrite/topic opener ID
+    }
+
+    return candidateOpenerId;
+  }
+
   /**
    * Initializes an isolated AI session with a frozen config snapshot and sends
-   * the server welcome message strictly once.
+   * the server welcome message strictly once (tagging the single ticket opener).
    */
   async initializeSessionAndSendWelcome(params: {
     channel: ObservedChannelMetadata;
@@ -243,6 +387,14 @@ export class SessionManager {
           categoryConfig
         );
 
+        const resolvedOpenerId = await this.resolveSingleTicketOpener({
+          channel,
+          initialOpenerId: playerDiscordId,
+          serverSettings,
+          signal,
+        });
+        if (signal.aborted) return null;
+
         const { session } = await this.repo.createOrGetTicketSession({
           guildId: this.guildId,
           channelId: channel.channelId,
@@ -252,16 +404,26 @@ export class SessionManager {
           isThread: channel.isThread,
           isPrivateThread: channel.isPrivateThread,
           providerVerifiedBy: verifiedBy,
-          playerDiscordId,
+          playerDiscordId: resolvedOpenerId,
           playerUsername,
           configVersion: snapshot.categoryConfigVersion,
           configSnapshot: snapshot,
         });
 
         let currentSession = session;
+        if (!currentSession.playerDiscordId && resolvedOpenerId) {
+          const patched = await this.repo.updateTicketSession(currentSession.id, {
+            playerDiscordId: resolvedOpenerId,
+          });
+          if (patched) currentSession = patched;
+        }
 
         if (!currentSession.welcomeSent && !signal.aborted) {
-          const welcomeText = currentSession.configSnapshot.welcomeMessage;
+          const welcomeText = formatWelcomeMessageWithUserTag({
+            welcomeMessage: currentSession.configSnapshot.welcomeMessage,
+            playerDiscordId: currentSession.playerDiscordId,
+            mentionUserOnWelcome: currentSession.configSnapshot.mentionUserOnWelcome,
+          });
           const sent = await this.messenger.sendMessage(channel.channelId, {
             content: welcomeText,
           });
@@ -331,15 +493,20 @@ export class SessionManager {
       let activeSession = session;
       if (!activeSession.welcomeSent) {
         // Crashed before welcome was sent — deliver once now
+        const welcomeText = formatWelcomeMessageWithUserTag({
+          welcomeMessage: activeSession.configSnapshot.welcomeMessage,
+          playerDiscordId: activeSession.playerDiscordId,
+          mentionUserOnWelcome: activeSession.configSnapshot.mentionUserOnWelcome,
+        });
         const sent = await this.messenger.sendMessage(activeSession.channelId, {
-          content: activeSession.configSnapshot.welcomeMessage,
+          content: welcomeText,
         });
         await this.repo.appendTicketMessage({
           sessionId: activeSession.id,
           discordMessageId: sent.messageId,
           senderType: 'assistant',
           senderDiscordId: this.messenger.getBotUserId(),
-          content: activeSession.configSnapshot.welcomeMessage,
+          content: welcomeText,
           redacted: false,
         });
         const updated = await this.repo.updateTicketSession(activeSession.id, {

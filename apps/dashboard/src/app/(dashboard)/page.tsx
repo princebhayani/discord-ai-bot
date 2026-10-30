@@ -7,6 +7,8 @@ import {
   FolderKanban,
   SearchCheck,
   Shield,
+  Sparkles,
+  Terminal,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,6 +54,45 @@ export default async function OverviewPage() {
             {serverSettings.botEnabled ? 'AI Assistant Enabled' : 'AI Assistant Paused'}
           </Badge>
         </div>
+      </div>
+
+      {/* Quick Setup Banner for Server Info & 1-Line DOT Commands */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="border-primary/25 bg-primary/5">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Sparkles className="h-4 w-4 text-primary" />
+                Server Details & Human Bot Persona
+              </CardTitle>
+              <CardDescription>
+                Add all your clan info, requirements, response times, welcome @mention, and human
+                voice settings.
+              </CardDescription>
+            </div>
+            <Button asChild size="sm">
+              <Link href="/server-info">Configure</Link>
+            </Button>
+          </CardHeader>
+        </Card>
+
+        <Card className="border-primary/25 bg-primary/5">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Terminal className="h-4 w-4 text-primary" />
+                1-Line DOT Command Setup
+              </CardTitle>
+              <CardDescription>
+                Connect your stats bot in one line (e.g. <code>.p {'{tag}'}</code> or{' '}
+                <code>.player {'{tag}'}</code>) to auto-fetch player profiles.
+              </CardDescription>
+            </div>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/player-integration">Set Up DOT Command</Link>
+            </Button>
+          </CardHeader>
+        </Card>
       </div>
 
       {/* Primary KPI Cards */}

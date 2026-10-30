@@ -80,6 +80,7 @@ describe('Phase 6 & Phase 7: Moderator Reports, Confidentiality Boundaries & Clo
         ticketDetectionConfig: {
           requireProviderVerification: false,
           threadClosurePolicy: 'locked_only',
+          ignorePrivateThreads: false,
         },
         aiSettings: { model: 'openai/gpt-oss-20b' },
         playerIntegrationConfig: {},

@@ -451,4 +451,190 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
       vi.useRealTimers();
     }
   });
+
+  it('distinguishes the single ticket opener from admins, supports 1-line DOT commands inside tickets, and builds humanized prompts', async () => {
+    const ADMIN_ID = '121212121212121212';
+    const repo = new InMemoryBotRepository();
+    repo.setServerSettings(
+      ServerSettingsSchema.parse({
+        guildId: GUILD_ID,
+        guildName: 'Boom House',
+        botEnabled: true,
+        defaultWelcomeMessage: 'Hey {user}! Welcome to Boom House!',
+        ticketDetectionConfig: {
+          requireProviderVerification: false,
+          mentionUserOnWelcome: true,
+        },
+        aiSettings: {
+          model: 'openai/gpt-oss-20b',
+          personaName: 'Duke The Recruiter',
+          toneStyle: 'human_casual',
+          humanizeConversation: true,
+          serverKnowledge: {
+            serverOverview: 'Boom House is a top war & CWL clan family.',
+            joiningProcessAndTiming: 'Leaders review tags within 15-30 minutes.',
+          },
+        },
+        playerIntegrationConfig: {
+          enabled: true,
+          quickCommandLine: '.p {tag}',
+          executionChannelMode: 'ticket_channel',
+          externalBotUserId: DATA_BOT_ID,
+          timeoutMs: 2000,
+        },
+        reportSettings: {},
+      })
+    );
+
+    repo.setCategoryConfigs(GUILD_ID, [
+      CategoryConfigSchema.parse({
+        guildId: GUILD_ID,
+        categoryId: CAT_ID,
+        categoryName: 'Recruitment',
+        enabled: true,
+        playerLookupEnabled: true,
+        questions: [
+          {
+            key: 'player_tag',
+            question: "What's your player tag?",
+            type: 'player_tag',
+            required: true,
+          },
+        ],
+      }),
+    ]);
+
+    const messenger = new LoopbackMessenger();
+    const fakeGroq = new FakeGroqClient();
+    const logger = new Logger('error');
+    const qm = new TicketQueueManager();
+    const configService = new ConfigService(repo, GUILD_ID, 'openai/gpt-oss-20b', 0);
+    const sessionManager = new SessionManager(GUILD_ID, repo, configService, messenger, qm, logger);
+    const groqService = new GroqAiService(fakeGroq, new GlobalSemaphore(5), 'openai/gpt-oss-20b', logger);
+    const playerAdapter = new PlayerDataBotAdapter(repo, messenger, logger);
+    const conversationService = new ConversationService(
+      repo,
+      sessionManager,
+      groqService,
+      playerAdapter,
+      messenger,
+      qm,
+      logger,
+      configService
+    );
+
+    const ticketChannelId = '730000000000000001';
+    await sessionManager.observeChannelOrThreadCreated({
+      exists: true,
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      name: 'ticket-boom',
+      topic: `Opened by <@${PLAYER_ID}>`,
+      categoryId: CAT_ID,
+      parentChannelId: null,
+      isThread: false,
+      isPrivateThread: false,
+      ownerId: null,
+      archived: false,
+      locked: false,
+    });
+
+    // 1st message tagged the single ticket opener via {user}
+    expect(messenger.sent[0]?.payload.content).toContain(`<@${PLAYER_ID}>`);
+
+    // Simulate stats bot replying right inside the ticket channel when `.p #9RQU2YQPL` is sent
+    messenger.onCommandSent = (chanId, cmdContent) => {
+      if (chanId === ticketChannelId && cmdContent === '.p #9RQU2YQPL') {
+        setTimeout(() => {
+          playerAdapter.observeExternalBotMessage({
+            id: 'stats-reply-1',
+            channelId: ticketChannelId,
+            guildId: GUILD_ID,
+            authorId: DATA_BOT_ID,
+            authorUsername: 'ClashPerk',
+            authorBot: true,
+            content: 'Player Tag: #9RQU2YQPL\nTown Hall: 16\nTrophies: 5400',
+            embeds: [],
+            mentionsUserIds: [],
+            createdTimestamp: Date.now(),
+          });
+        }, 10);
+      }
+    };
+
+    fakeGroq.queuedResponses.push((req) => {
+      const sys = req.messages[0]?.content ?? '';
+      expect(sys).toContain('Duke The Recruiter');
+      expect(sys).toContain('Boom House is a top war & CWL clan family.');
+      expect(sys).toContain('STRICTLY BANNED AI CLICHÉS');
+      return {
+        content: JSON.stringify({
+          reply: "Awesome, got your tag! Passing `#9RQU2YQPL` to the leaders right now—they usually check within 15-30 mins.",
+          extractedAnswers: { player_tag: '#9RQU2YQPL' },
+          missingFields: [],
+          requestedAction: 'lookup_player',
+          lookupTarget: '#9RQU2YQPL',
+          issueSummary: 'Opener wants to join Boom House (#9RQU2YQPL).',
+          neutralAssessment: 'Profile verified.',
+          complete: true,
+        }),
+        promptTokens: 250,
+        completionTokens: 60,
+      };
+    });
+
+    // Opener sends tag -> triggers 1-line `.p #9RQU2YQPL` inside ticket channel
+    await conversationService.handleIncomingMessage({
+      id: 'opener-1',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'PrinceOpener',
+      authorBot: false,
+      content: '#9RQU2YQPL',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    expect(messenger.sent.some((m) => m.payload.content === '.p #9RQU2YQPL')).toBe(true);
+    const msgCountBeforeAdmin = messenger.sent.length;
+
+    // Admin runs a manual bot command `.c boom` -> ignored silently, no AI turn triggered
+    await conversationService.handleIncomingMessage({
+      id: 'admin-cmd-1',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: ADMIN_ID,
+      authorUsername: 'ClanLeader',
+      authorBot: false,
+      authorHasModeratorPermissions: true,
+      content: '.c boom',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+    expect(messenger.sent.length).toBe(msgCountBeforeAdmin);
+
+    // Admin sends a real chat message to the player -> NEVER mistaken for opener; hands off to human staff!
+    await conversationService.handleIncomingMessage({
+      id: 'admin-chat-1',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: ADMIN_ID,
+      authorUsername: 'ClanLeader',
+      authorBot: false,
+      authorHasModeratorPermissions: true,
+      content: 'Hey welcome bro, sending you an invite to Boom House now!',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    expect(messenger.sent.length).toBe(msgCountBeforeAdmin);
+    expect(fakeGroq.requests).toHaveLength(1);
+    const finalSession = await repo.getTicketSessionByChannel(ticketChannelId);
+    expect(finalSession?.playerDiscordId).toBe(PLAYER_ID);
+    expect(finalSession?.status).toBe('human_handoff');
+  });
 });

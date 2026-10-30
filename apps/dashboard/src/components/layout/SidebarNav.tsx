@@ -9,19 +9,21 @@ import {
   FolderKanban,
   ListChecks,
   LogOut,
-  PlugZap,
   ShieldCheck,
+  Sparkles,
+  Terminal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Overview', icon: Activity },
+  { href: '/server-info', label: 'Server Info & Persona', icon: Sparkles },
+  { href: '/player-integration', label: 'DOT Commands', icon: Terminal },
   { href: '/categories', label: 'Category Management', icon: FolderKanban },
   { href: '/questions', label: 'Question Builder', icon: ListChecks },
-  { href: '/player-integration', label: 'Player Integration', icon: PlugZap },
   { href: '/reports', label: 'Report Settings', icon: FileText },
-  { href: '/ai-settings', label: 'AI Settings', icon: Bot },
+  { href: '/ai-settings', label: 'AI & Detection', icon: Bot },
 ] as const;
 
 export function SidebarNav({

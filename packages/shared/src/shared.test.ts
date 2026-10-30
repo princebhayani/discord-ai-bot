@@ -9,6 +9,7 @@ import {
   evaluateQuestionnaireProgress,
   FORBIDDEN_PERMISSIONS,
   getGroqModelCapabilities,
+  parseQuickDotCommands,
   QuestionnaireQuestionSchema,
   REQUIRED_PERMISSION_BITFIELD,
   sanitizeLogMetadata,
@@ -186,5 +187,31 @@ describe('Phase 1: @hrbot/shared Foundation & Database Schema', () => {
     }
 
     expect(sql2).toContain('cleanup_closed_ticket_session');
+  });
+
+  it('parses 1-line DOT command definitions cleanly and rejects command injection', () => {
+    const simple = parseQuickDotCommands('.p {tag}');
+    expect(simple.valid).toBe(true);
+    expect(simple.commandPrefix).toBe('.');
+    expect(simple.supportedActions).toEqual(['lookup_player']);
+    expect(simple.commandTemplates.lookup_player).toBe('{prefix}p {target}');
+    expect(simple.previews.lookup_player).toBe('.p #9RQU2YQPL');
+
+    const withExampleTag = parseQuickDotCommands('.player #9RQU2YQPL');
+    expect(withExampleTag.valid).toBe(true);
+    expect(withExampleTag.commandTemplates.lookup_player).toBe('{prefix}player {target}');
+    expect(withExampleTag.previews.lookup_player).toBe('.player #9RQU2YQPL');
+
+    const bareCommand = parseQuickDotCommands('.p');
+    expect(bareCommand.valid).toBe(true);
+    expect(bareCommand.commandTemplates.lookup_player).toBe('{prefix}p {target}');
+
+    const multi = parseQuickDotCommands('.p {tag}, .clan {clan}');
+    expect(multi.valid).toBe(true);
+    expect(multi.supportedActions).toEqual(['lookup_player', 'lookup_clan']);
+    expect(multi.previews.lookup_clan).toBe('.clan #2PP');
+
+    const bad = parseQuickDotCommands('.p @everyone');
+    expect(bad.valid).toBe(false);
   });
 });

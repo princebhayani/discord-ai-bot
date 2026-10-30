@@ -102,19 +102,41 @@ export const TicketDetectionConfigSchema = z.object({
   waitForProviderEmbedMs: z.number().int().min(1000).max(30000).default(8000),
   threadClosurePolicy: ThreadClosurePolicySchema.default('locked_only'),
   webhookEnabled: z.boolean().default(false),
+  ignorePrivateThreads: z.boolean().default(true),
+  mentionUserOnWelcome: z.boolean().default(true),
 });
 export type TicketDetectionConfig = z.infer<typeof TicketDetectionConfigSchema>;
 
+export const ToneStyleSchema = z.enum([
+  'human_casual',
+  'warm_friendly',
+  'professional',
+]);
+export type ToneStyle = z.infer<typeof ToneStyleSchema>;
+
+export const ServerKnowledgeSchema = z.object({
+  serverOverview: z.string().max(4000).default(''),
+  clanRequirementsAndRules: z.string().max(6000).default(''),
+  joiningProcessAndTiming: z.string().max(4000).default(''),
+  additionalNotes: z.string().max(4000).default(''),
+});
+export type ServerKnowledge = z.infer<typeof ServerKnowledgeSchema>;
+
 export const AiSettingsSchema = z.object({
   model: z.string().trim().default(''),
+  personaName: z.string().trim().max(80).default(''),
+  toneStyle: ToneStyleSchema.default('human_casual'),
+  humanizeConversation: z.boolean().default(true),
+  answerPostCompletionQuestions: z.boolean().default(true),
+  serverKnowledge: ServerKnowledgeSchema.default({}),
   systemInstructions: z
     .string()
     .max(4000)
     .default(
-      'You are a polite, concise, automated Discord ticket support assistant. Never pretend to be human staff. Ask one main question at a time, never repeat answered questions, and stay focused on gathering ticket information.'
+      'Chat naturally like a real, friendly Discord recruiter and support helper. Keep replies short (1-2 sentences), casual, and conversational. Ask one question at a time, never repeat answered questions, and never promise bans or leadership decisions.'
     ),
   maxTokens: z.number().int().min(128).max(4096).default(900),
-  temperature: z.number().min(0).max(1.5).default(0.2),
+  temperature: z.number().min(0).max(1.5).default(0.55),
   globalConcurrencyLimit: z.number().int().min(1).max(25).default(5),
   perTicketRateLimitPerMinute: z.number().int().min(2).max(60).default(12),
   structuredOutputsEnabled: z.boolean().default(true),
@@ -122,7 +144,7 @@ export const AiSettingsSchema = z.object({
     .string()
     .min(5)
     .max(1000)
-    .default('Thank you for your message. A human moderator will follow up with you shortly.'),
+    .default('Hang tight—one of our team members will jump in here to help you out soon!'),
 });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
 
@@ -148,8 +170,16 @@ export const ParserConfigSchema = z.object({
 });
 export type ParserConfig = z.infer<typeof ParserConfigSchema>;
 
+export const ExecutionChannelModeSchema = z.enum([
+  'dedicated_channel',
+  'ticket_channel',
+]);
+export type ExecutionChannelMode = z.infer<typeof ExecutionChannelModeSchema>;
+
 export const PlayerIntegrationConfigSchema = z.object({
   enabled: z.boolean().default(false),
+  quickCommandLine: z.string().max(500).default(''),
+  executionChannelMode: ExecutionChannelModeSchema.default('dedicated_channel'),
   externalBotUserId: OptionalSnowflakeSchema.default(''),
   commandPrefix: z.string().trim().min(1).max(5).default('.'),
   executionChannelId: OptionalSnowflakeSchema.default(''),
@@ -253,6 +283,7 @@ export const SessionConfigSnapshotSchema = z.object({
   categoryConfigVersion: z.number().int().positive(),
   guildName: z.string(),
   welcomeMessage: z.string(),
+  mentionUserOnWelcome: z.boolean().default(true),
   category: CategoryConfigSchema,
   aiSettings: AiSettingsSchema,
   playerIntegrationConfig: PlayerIntegrationConfigSchema,

@@ -138,7 +138,8 @@ export async function startAssistantBot(
     playerAdapter,
     messenger,
     queueManager,
-    logger.child('conversation')
+    logger.child('conversation'),
+    configService
   );
 
   conversationService.setReportCallback(

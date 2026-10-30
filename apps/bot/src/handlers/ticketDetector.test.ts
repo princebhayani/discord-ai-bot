@@ -160,7 +160,7 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
     expect(generalDisp.status).toBe('ignored');
   });
 
-  it('detects existing ticket threads created by ticket bot while ignoring ordinary user threads', () => {
+  it('ignores private threads by default (preventing welcome spam in staff private threads) and blocks child threads inside ticket channels', () => {
     const { serverSettings, categories } = createFixtureSettings();
 
     const ticketThread: ObservedChannelMetadata = {
@@ -171,6 +171,7 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
       topic: null,
       categoryId: ENABLED_CAT_ID,
       parentChannelId: '999999999999999990',
+      parentChannelName: 'open-a-ticket',
       isThread: true,
       isPrivateThread: true,
       ownerId: TICKET_BOT_ID,
@@ -178,13 +179,45 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
       locked: false,
     };
 
-    const validThreadDisp = evaluateObservedTicketCandidate({
+    // Default behavior: ignorePrivateThreads is TRUE -> private threads are ignored!
+    const defaultPrivateDisp = evaluateObservedTicketCandidate({
       channel: ticketThread,
       expectedGuildId: GUILD_ID,
       serverSettings,
       categoriesById: categories,
     });
+    expect(defaultPrivateDisp.status).toBe('ignored');
+
+    // When admin explicitly opts in to standalone private-thread tickets (ignorePrivateThreads: false):
+    const settingsAllowingPrivateThreads: ServerSettings = {
+      ...serverSettings,
+      ticketDetectionConfig: {
+        ...serverSettings.ticketDetectionConfig,
+        ignorePrivateThreads: false,
+      },
+    };
+
+    const validThreadDisp = evaluateObservedTicketCandidate({
+      channel: ticketThread,
+      expectedGuildId: GUILD_ID,
+      serverSettings: settingsAllowingPrivateThreads,
+      categoriesById: categories,
+    });
     expect(validThreadDisp.status).toBe('eligible');
+
+    // Even when ignorePrivateThreads is false, a sub-thread created INSIDE a ticket-* channel is ignored!
+    const subThreadInsideTicketChannel: ObservedChannelMetadata = {
+      ...ticketThread,
+      channelId: '999999999999999993',
+      parentChannelName: 'ticket-0142',
+    };
+    const subThreadDisp = evaluateObservedTicketCandidate({
+      channel: subThreadInsideTicketChannel,
+      expectedGuildId: GUILD_ID,
+      serverSettings: settingsAllowingPrivateThreads,
+      categoriesById: categories,
+    });
+    expect(subThreadDisp.status).toBe('ignored');
 
     // Ordinary discussion thread created by a human player in the same category -> ignored
     const userDiscussionThread: ObservedChannelMetadata = {
@@ -198,7 +231,7 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
     const userThreadDisp = evaluateObservedTicketCandidate({
       channel: userDiscussionThread,
       expectedGuildId: GUILD_ID,
-      serverSettings,
+      serverSettings: settingsAllowingPrivateThreads,
       categoriesById: categories,
     });
     expect(userThreadDisp.status).toBe('ignored');

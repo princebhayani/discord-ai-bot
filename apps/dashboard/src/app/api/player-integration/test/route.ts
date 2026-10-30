@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import {
   LookupActionSchema,
+  parseQuickDotCommands,
   PlayerIntegrationConfigSchema,
 } from '@hrbot/shared';
 import { verifyDashboardModerator } from '@/lib/auth/guard';
@@ -48,14 +49,26 @@ export async function POST(req: Request) {
         ? (trimmed.startsWith('#') ? trimmed : `#${trimmed}`).toUpperCase().replace(/O/g, '0')
         : trimmed;
 
-    if (!config.supportedActions.includes(action)) {
+    let effectivePrefix = config.commandPrefix;
+    let effectiveSupported = config.supportedActions;
+    let effectiveTemplates = config.commandTemplates;
+    if (config.quickCommandLine && config.quickCommandLine.trim().length > 0) {
+      const quick = parseQuickDotCommands(config.quickCommandLine, config.commandPrefix);
+      if (quick.valid) {
+        effectivePrefix = quick.commandPrefix;
+        effectiveSupported = quick.supportedActions;
+        effectiveTemplates = quick.commandTemplates;
+      }
+    }
+
+    if (!effectiveSupported.includes(action)) {
       return NextResponse.json({
         valid: false,
-        error: `Action "${action}" is currently unchecked in Supported Actions.`,
+        error: `Action "${action}" is not included in your 1-line command setup.`,
       });
     }
 
-    const template = config.commandTemplates[action];
+    const template = effectiveTemplates[action];
     if (!template) {
       return NextResponse.json({
         valid: false,
@@ -63,8 +76,9 @@ export async function POST(req: Request) {
       });
     }
     const renderedCommand = template
-      .replace(/\{prefix\}/g, config.commandPrefix)
+      .replace(/\{prefix\}/g, effectivePrefix)
       .replace(/\{target\}/g, normalizedTarget)
+      .replace(/\{tag\}/gi, normalizedTarget)
       .replace(/\{player_tag\}/g, normalizedTarget)
       .replace(/\{clan_name\}/g, normalizedTarget)
       .trim();

@@ -1,8 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save } from 'lucide-react';
+import { Save, Sparkles } from 'lucide-react';
 import {
   getGroqModelCapabilities,
   KNOWN_GROQ_MODELS,
@@ -104,6 +105,19 @@ export function AiSettingsClient({
   return (
     <div className="space-y-6">
       <StatusBanner status={status} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3.5 text-sm">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-primary" />
+          <span>
+            Looking to add all your <strong>Server &amp; Clan Details</strong>, Persona Name, or
+            Welcome <code>@mention</code>?
+          </span>
+        </div>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/server-info">Open Server Info &amp; Persona</Link>
+        </Button>
+      </div>
 
       <Card>
         <CardHeader>
@@ -326,20 +340,51 @@ export function AiSettingsClient({
             </div>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div>
-              <p className="text-sm font-medium">Require Ticket Provider Bot Verification</p>
-              <p className="text-xs text-muted-foreground">
-                Verifies thread creator ID or opening panel message from your existing ticket bot
-                before starting an AI session.
-              </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="pr-2">
+                <p className="text-sm font-medium">Require Provider Bot Verification</p>
+                <p className="text-xs text-muted-foreground">
+                  Verifies opening message from your ticket bot before starting AI.
+                </p>
+              </div>
+              <Switch
+                checked={detection.requireProviderVerification}
+                onCheckedChange={(checked) =>
+                  setDetection({ ...detection, requireProviderVerification: checked })
+                }
+              />
             </div>
-            <Switch
-              checked={detection.requireProviderVerification}
-              onCheckedChange={(checked) =>
-                setDetection({ ...detection, requireProviderVerification: checked })
-              }
-            />
+
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="pr-2">
+                <p className="text-sm font-medium">Ignore Private Threads</p>
+                <p className="text-xs text-muted-foreground">
+                  Prevents welcome/AI messages inside private staff threads.
+                </p>
+              </div>
+              <Switch
+                checked={detection.ignorePrivateThreads}
+                onCheckedChange={(checked) =>
+                  setDetection({ ...detection, ignorePrivateThreads: checked })
+                }
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="pr-2">
+                <p className="text-sm font-medium">Tag Opener on 1st Message</p>
+                <p className="text-xs text-muted-foreground">
+                  Mentions <code>{'<@opener>'}</code> on the initial welcome message.
+                </p>
+              </div>
+              <Switch
+                checked={detection.mentionUserOnWelcome}
+                onCheckedChange={(checked) =>
+                  setDetection({ ...detection, mentionUserOnWelcome: checked })
+                }
+              />
+            </div>
           </div>
 
           <Button type="button" onClick={saveAllAiAndDetection}>

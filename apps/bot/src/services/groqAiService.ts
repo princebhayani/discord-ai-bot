@@ -188,7 +188,13 @@ export function buildStrictTurnJsonSchema(
   };
 }
 
-export function buildSystemPrompt(input: AiTurnInput): string {
+const LEGACY_ROBOTIC_INSTRUCTIONS =
+  'You are a polite, concise, automated Discord ticket support assistant. Never pretend to be human staff. Ask one main question at a time, never repeat answered questions, and stay focused on gathering ticket information.';
+
+const LEGACY_ROBOTIC_FALLBACK =
+  'Thank you for your message. A human moderator will follow up with you shortly.';
+
+export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string {
   const {
     snapshot,
     validAnswers,
@@ -197,6 +203,20 @@ export function buildSystemPrompt(input: AiTurnInput): string {
     playerProfile,
     recentSecretRedacted,
   } = input;
+
+  const ai = snapshot.aiSettings;
+  const humanize = ai.humanizeConversation !== false;
+  const personaDisplay = ai.personaName?.trim()
+    ? `${ai.personaName.trim()} (for "${snapshot.guildName}")`
+    : `a recruiter & ticket helper for "${snapshot.guildName}"`;
+
+  const currentDateText = now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
 
   const faqText =
     snapshot.category.faqs.length > 0
@@ -220,29 +240,82 @@ export function buildSystemPrompt(input: AiTurnInput): string {
       ? snapshot.playerIntegrationConfig.supportedActions
       : [];
 
+  const knowledge = ai.serverKnowledge;
+  const knowledgeBlocks = [
+    knowledge?.serverOverview?.trim()
+      ? `## About ${snapshot.guildName}\n${knowledge.serverOverview.trim()}`
+      : '',
+    knowledge?.clanRequirementsAndRules?.trim()
+      ? `## Clans, Requirements & Rules\n${knowledge.clanRequirementsAndRules.trim()}`
+      : '',
+    knowledge?.joiningProcessAndTiming?.trim()
+      ? `## How Joining Works & Expected Leader Response Time\n${knowledge.joiningProcessAndTiming.trim()}`
+      : '',
+    knowledge?.additionalNotes?.trim()
+      ? `## Extra Server Details\n${knowledge.additionalNotes.trim()}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const customInstructions =
+    humanize && ai.systemInstructions.trim() === LEGACY_ROBOTIC_INSTRUCTIONS
+      ? 'Chat naturally like a real, chill Discord clan recruiter and helper. Keep messages short (1-2 sentences), friendly, and down-to-earth.'
+      : ai.systemInstructions;
+
+  const toneDirective =
+    ai.toneStyle === 'professional'
+      ? 'Tone: Friendly, clear, and respectful without stiff corporate jargon.'
+      : ai.toneStyle === 'warm_friendly'
+        ? 'Tone: Warm, welcoming, upbeat Discord community style.'
+        : 'Tone: Natural, casual Discord chat—like a real human recruiter/moderator typing in Discord (short sentences, natural contractions like "you\'re", "we\'ll", "gotcha", "no rush").';
+
+  const humanStyleSection = humanize
+    ? [
+        `# Human Discord Voice Rules (CRITICAL)`,
+        `- ${toneDirective}`,
+        `- Keep replies concise: usually 1–2 short sentences (never a wall of text).`,
+        `- STRICTLY BANNED AI CLICHÉS — NEVER write phrases like:`,
+        `  * "Could you please provide..." or "Could you please share..." (say "What's your player tag?" or "Drop your player tag (#...) whenever you're ready!")`,
+        `  * "How can I help you today?" or "How may I assist you?" (say "Hey! Looking to join ${snapshot.guildName}, or need help with something?")`,
+        `  * "Thanks for providing your player tag." or "Thank you for your patience!"`,
+        `  * "A staff member will review your request shortly." (vary it naturally, e.g., "Got it! I've passed your tag to the leaders—someone will check your profile and ping you right here soon.")`,
+        `- NEVER repeat yourself: Check your previous message! If you just asked for their tag and they say "sure", "ok", "wait", or "one sec", DO NOT ask the question again—just say something natural like "No rush, drop it whenever you're ready 👍" or "Go for it!".`,
+        `- Small talk & awareness: Today is ${currentDateText}. If the opener asks a quick casual question (like what day it is or how joining works), answer it naturally like a normal person and smoothly continue.`,
+        `- Honesty boundary: Never claim you personally can accept/kick/ban in-game (leaders handle invites & final decisions), and if directly asked whether you're a bot, be honest casually without sounding robotic.`,
+      ].join('\n')
+    : `Today's date (UTC): ${currentDateText}.\n${toneDirective}`;
+
+  const intakeStateNote = progress.isComplete
+    ? `INTAKE STATUS: ALL REQUIRED ANSWERS ARE ALREADY COLLECTED! Do NOT repeat "a staff member will review your request shortly" if you already said that. Answer any follow-up question (like "but when?" or clan questions) naturally using the Server Knowledge below (if timing isn't specified, let them know leaders check open tickets as soon as they hop online and will ping them right here), and keep complete=true.`
+    : `INTAKE STATUS: Still gathering required info (${progress.missingRequiredQuestions.map((q) => q.key).join(', ') || 'none'}).`;
+
   return [
-    `# Role & Identity`,
-    `You are the automated AI ticket support assistant for "${snapshot.guildName}" (Category: "${snapshot.category.categoryName}").`,
-    `Always be transparent that you are an automated support assistant gathering details for human moderators. Never claim to be human staff and never promise bans, unbans, or enforcement actions.`,
+    `# Role & Persona`,
+    `You are ${personaDisplay} chatting with the ticket opener inside category "${snapshot.category.categoryName}".`,
+    `There is strictly ONE ticket opener in this ticket—all user messages in this conversation come from that ticket opener.`,
+    ``,
+    humanStyleSection,
     ``,
     `# Server & Category Instructions`,
-    snapshot.aiSettings.systemInstructions,
+    customInstructions,
     snapshot.category.categoryInstructions
       ? `Category-specific guidance: ${snapshot.category.categoryInstructions}`
       : '',
+    knowledgeBlocks ? `\n# ${snapshot.guildName} Server & Clan Knowledge Base\n${knowledgeBlocks}` : '',
     ``,
-    `# Conversation Rules`,
-    `1. Understand natural-language replies and extract ALL answers provided in the player's message (even if they answered multiple questions at once).`,
-    `2. If the player corrects a previous answer, include the updated value in extractedAnswers; otherwise set keys not mentioned in the latest message to null.`,
-    `3. NEVER re-ask a question that is already present in Already Collected Valid Answers unless the player explicitly asks to change it.`,
-    `4. Ask AT MOST ONE main question in your reply so the conversation feels natural and not like a rigid form.`,
-    `5. Stay focused on the support ticket; politely steer away from off-topic chat.`,
+    `# Conversation & Extraction Rules`,
+    `1. ${intakeStateNote}`,
+    `2. Understand natural-language replies and extract ALL answers provided in the player's latest message (even if they answered multiple questions at once).`,
+    `3. If the player corrects a previous answer, include the updated value in extractedAnswers; otherwise set keys not mentioned in the latest message to null.`,
+    `4. NEVER re-ask a question already present in Already Collected Valid Answers unless the player asks to change it.`,
+    `5. Ask AT MOST ONE natural question at a time.`,
     `6. Never ask for passwords, recovery codes, or authentication secrets.`,
     recentSecretRedacted
-      ? `IMPORTANT: The player's last message contained sensitive credential text that was automatically redacted. Remind them briefly never to share passwords or recovery codes in Discord.`
+      ? `IMPORTANT: The player's last message contained sensitive credential text that was automatically redacted. Remind them casually never to share passwords or recovery codes on Discord.`
       : '',
-    `7. Approved lookup actions you may request via requestedAction: ${lookupAllowed.length > 0 ? lookupAllowed.join(', ') : 'none (external lookup disabled)'}. Only request a lookup when you have a target (like player_tag or clan_name) that has not yet been looked up.`,
-    `8. When all required questions are answered (missingRequiredKeys becomes empty after extracting from the latest message), set complete=true, provide a concise neutral issueSummary and neutralAssessment, and thank the player while letting them know human staff will review their ticket shortly.`,
+    `7. Approved lookup actions via requestedAction: ${lookupAllowed.length > 0 ? lookupAllowed.join(', ') : 'none (external lookup disabled)'}. Request lookup_player as soon as a player_tag is shared if not yet looked up.`,
+    `8. When all required questions are answered, set complete=true, write a concise factual issueSummary and neutralAssessment for leaders, and let the opener know naturally that you've passed their details to leadership.`,
     ``,
     `# Configured Active Questionnaire`,
     JSON.stringify(questionsSpec, null, 2),
@@ -251,10 +324,10 @@ export function buildSystemPrompt(input: AiTurnInput): string {
     JSON.stringify(validAnswers, null, 2),
     ``,
     Object.keys(invalidFieldErrors).length > 0
-      ? `# Validation Notes From Previous Attempt\n${JSON.stringify(invalidFieldErrors, null, 2)}`
+      ? `# Validation Notes From Previous Attempt (ask casually to double-check)\n${JSON.stringify(invalidFieldErrors, null, 2)}`
       : '',
     playerProfile
-      ? `# Verified External Player-Data Bot Profile\n${JSON.stringify(playerProfile, null, 2)}`
+      ? `# Verified In-Game Player Profile (from DOT command lookup)\n${JSON.stringify(playerProfile, null, 2)}`
       : '',
     `# Category FAQs`,
     faqText,
@@ -281,10 +354,25 @@ export class GroqAiService {
     this.semaphore.setLimit(snapshot.aiSettings.globalConcurrencyLimit);
 
     const systemPrompt = buildSystemPrompt(input);
-    const recentHistory = conversationHistory.slice(-20).map((m) => ({
-      role: (m.senderType === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-      content: m.content,
-    }));
+    // Filter history to player & assistant messages so any recorded staff notes don't confuse turn roles
+    const recentHistory = conversationHistory
+      .filter((m) => m.senderType === 'assistant' || m.senderType === 'player')
+      .slice(-20)
+      .map((m) => ({
+        role: (m.senderType === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+        content: m.content,
+      }));
+
+    const effectiveTemperature =
+      snapshot.aiSettings.humanizeConversation !== false && snapshot.aiSettings.temperature <= 0.25
+        ? 0.55
+        : snapshot.aiSettings.temperature;
+
+    const effectiveFallback =
+      snapshot.aiSettings.humanizeConversation !== false &&
+      snapshot.aiSettings.fallbackMessage.trim() === LEGACY_ROBOTIC_FALLBACK
+        ? 'Hang tight—one of our team members will jump in here to help you out soon!'
+        : snapshot.aiSettings.fallbackMessage;
 
     const messages: RawGroqChatRequest['messages'] = [
       { role: 'system', content: systemPrompt },
@@ -317,7 +405,7 @@ export class GroqAiService {
         rawResult = await this.client.complete({
           model,
           messages,
-          temperature: snapshot.aiSettings.temperature,
+          temperature: effectiveTemperature,
           maxTokens: snapshot.aiSettings.maxTokens,
           responseFormat: preferStrictSchema ? strictFormat : jsonObjectFormat,
           signal,
@@ -336,7 +424,7 @@ export class GroqAiService {
           rawResult = await this.client.complete({
             model,
             messages,
-            temperature: snapshot.aiSettings.temperature,
+            temperature: effectiveTemperature,
             maxTokens: snapshot.aiSettings.maxTokens,
             responseFormat: jsonObjectFormat,
             signal,
@@ -346,7 +434,7 @@ export class GroqAiService {
         }
       }
 
-      const parsedJson = this.parseAndValidateJson(rawResult, snapshot.aiSettings.fallbackMessage);
+      const parsedJson = this.parseAndValidateJson(rawResult, effectiveFallback);
       return {
         turn: parsedJson.turn,
         usage: {

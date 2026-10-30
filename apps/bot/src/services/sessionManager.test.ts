@@ -77,6 +77,7 @@ describe('Phase 3: Category Filtering, Snapshot Versioning, Queues & Recovery', 
         ticketDetectionConfig: {
           providerBotIds: [TICKET_BOT_ID],
           requireProviderVerification: true,
+          ignorePrivateThreads: false,
         },
         aiSettings: { model: 'openai/gpt-oss-20b' },
         playerIntegrationConfig: {},
@@ -200,6 +201,109 @@ describe('Phase 3: Category Filtering, Snapshot Versioning, Queues & Recovery', 
     await Promise.all([p1, p2, p3]);
     expect(order[0]).toBe('T2-fast');
     expect(order.slice(1)).toEqual(['T1-first', 'T1-second']);
+  });
+
+  it('tags the single ticket opener on the 1st welcome message and suppresses welcome inside child private threads', async () => {
+    const OPENER_ID = '888888888888888881';
+    const repo = new InMemoryBotRepository();
+    repo.setServerSettings(
+      ServerSettingsSchema.parse({
+        guildId: GUILD_ID,
+        guildName: 'Boom House',
+        botEnabled: true,
+        defaultWelcomeMessage: 'hi thank you for choosing boom house',
+        ticketDetectionConfig: {
+          requireProviderVerification: false,
+          mentionUserOnWelcome: true,
+          ignorePrivateThreads: true,
+        },
+        aiSettings: { model: 'openai/gpt-oss-20b' },
+        playerIntegrationConfig: {},
+        reportSettings: {},
+        configVersion: 1,
+      })
+    );
+
+    repo.setCategoryConfigs(GUILD_ID, [
+      CategoryConfigSchema.parse({
+        guildId: GUILD_ID,
+        categoryId: CAT_ID,
+        categoryName: 'Recruitment',
+        enabled: true,
+        questions: [],
+      }),
+    ]);
+
+    const messenger = new MockDiscordMessenger();
+    const manager = new SessionManager(
+      GUILD_ID,
+      repo,
+      new ConfigService(repo, GUILD_ID, 'openai/gpt-oss-20b', 0),
+      messenger,
+      new TicketQueueManager(),
+      new Logger('error')
+    );
+
+    const ticketChannelId = '790000000000000001';
+    const ticketChannelMeta: ObservedChannelMetadata = {
+      exists: true,
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      name: 'ticket-0001',
+      topic: null,
+      categoryId: CAT_ID,
+      parentChannelId: null,
+      isThread: false,
+      isPrivateThread: false,
+      ownerId: null,
+      archived: false,
+      locked: false,
+    };
+    messenger.channels.set(ticketChannelId, ticketChannelMeta);
+    messenger.recentMessages.set(ticketChannelId, [
+      {
+        id: 'panel-1',
+        channelId: ticketChannelId,
+        guildId: GUILD_ID,
+        authorId: TICKET_BOT_ID,
+        authorUsername: 'TicketTool',
+        authorBot: true,
+        content: `Welcome <@${OPENER_ID}>! Support will be with you shortly.`,
+        embeds: [],
+        mentionsUserIds: [OPENER_ID],
+        createdTimestamp: Date.now(),
+      },
+    ]);
+
+    const session = await manager.observeChannelOrThreadCreated(ticketChannelMeta);
+    expect(session).not.toBeNull();
+    expect(session?.playerDiscordId).toBe(OPENER_ID);
+    expect(messenger.sentMessages).toHaveLength(1);
+    expect(messenger.sentMessages[0]?.payload.content).toBe(
+      `<@${OPENER_ID}> hi thank you for choosing boom house`
+    );
+
+    // 1.7s later Ticket Bot creates a private staff thread INSIDE ticket-0001 -> must NOT send welcome!
+    const childPrivateThreadId = '790000000000000002';
+    const childThreadSession = await manager.observeChannelOrThreadCreated({
+      exists: true,
+      channelId: childPrivateThreadId,
+      guildId: GUILD_ID,
+      name: 'private-staff-discussion',
+      topic: null,
+      categoryId: CAT_ID,
+      parentChannelId: ticketChannelId,
+      parentChannelName: 'ticket-0001',
+      isThread: true,
+      isPrivateThread: true,
+      ownerId: TICKET_BOT_ID,
+      archived: false,
+      locked: false,
+    });
+
+    expect(childThreadSession).toBeNull();
+    expect(messenger.sentMessages).toHaveLength(1);
+    expect(manager.getObservedStaffThreadId(ticketChannelId)).toBe(childPrivateThreadId);
   });
 });
 

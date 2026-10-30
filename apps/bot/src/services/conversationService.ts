@@ -5,6 +5,11 @@ import {
   type AnswerPrimitive,
   type ParsedPlayerProfile,
 } from '@hrbot/shared';
+import type { ConfigService } from '../config/configService.js';
+import {
+  extractOpenerFromBotMessages,
+  resolveOpenerFromChannelMetadata,
+} from '../handlers/ticketDetector.js';
 import type { PlayerDataBotAdapter } from '../integrations/playerDataBotAdapter.js';
 import type { TicketQueueManager } from '../queues/ticketQueueManager.js';
 import type {
@@ -36,7 +41,8 @@ export class ConversationService {
     private readonly playerAdapter: PlayerDataBotAdapter,
     private readonly messenger: DiscordMessenger,
     private readonly queueManager: TicketQueueManager,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly configService?: ConfigService
   ) {}
 
   setReportCallback(cb: ReportTriggerCallback): void {
@@ -79,38 +85,165 @@ export class ConversationService {
     await this.queueManager.enqueueForTicket(message.channelId, async (signal) => {
       if (signal.aborted) return;
 
-      const session = await this.sessionManager.resolveActiveSession(message.channelId);
-      if (!session || session.status === 'closing' || session.status === 'human_handoff') {
+      let currentSession = await this.sessionManager.resolveActiveSession(message.channelId);
+      if (
+        !currentSession ||
+        currentSession.status === 'closing' ||
+        currentSession.status === 'human_handoff'
+      ) {
         return;
       }
 
-      // Check if message author is a configured staff moderator stepping in
-      const isStaffAuthor = session.configSnapshot.reportSettings.staffUserIds.includes(
-        message.authorId
-      );
-      if (isStaffAuthor && session.status === 'ready_for_review') {
-        const handedOff = await this.repo.updateTicketSession(session.id, {
+      const reportSettings = currentSession.configSnapshot.reportSettings;
+      const ourBotId = this.messenger.getBotUserId();
+      const externalBotId =
+        currentSession.configSnapshot.playerIntegrationConfig.externalBotUserId || null;
+
+      // 1. Ensure the SINGLE ticket opener (`playerDiscordId`) is locked in before classifying the speaker
+      if (!currentSession.playerDiscordId) {
+        let providerBotIds: string[] = [];
+        if (this.configService) {
+          try {
+            const guildCfg = await this.configService.getGuildConfiguration();
+            providerBotIds = guildCfg.serverSettings.ticketDetectionConfig.providerBotIds;
+          } catch {
+            providerBotIds = [];
+          }
+        }
+
+        const knownBotIds = new Set<string>(
+          [ourBotId, externalBotId, ...providerBotIds].filter((id): id is string => Boolean(id))
+        );
+
+        let discoveredOpenerId: string | null = null;
+        let chanMeta = null;
+        try {
+          const [recentMsgs, fetchedMeta] = await Promise.all([
+            this.messenger.fetchRecentMessages(currentSession.channelId, 10),
+            this.messenger.fetchChannelMetadata(currentSession.channelId),
+          ]);
+          chanMeta = fetchedMeta;
+          discoveredOpenerId =
+            extractOpenerFromBotMessages({
+              messages: recentMsgs,
+              knownBotIds,
+              ourBotUserId: ourBotId,
+              externalDataBotId: externalBotId,
+              staffUserIds: reportSettings.staffUserIds,
+            }) ??
+            resolveOpenerFromChannelMetadata({
+              channel: fetchedMeta,
+              knownBotIds,
+              staffUserIds: reportSettings.staffUserIds,
+            });
+        } catch {
+          discoveredOpenerId = null;
+        }
+
+        if (!discoveredOpenerId) {
+          const authorHasStaffRole = Boolean(
+            message.authorRoleIds?.some((r) => reportSettings.staffRoleIds.includes(r))
+          );
+          const authorLooksLikeAdmin =
+            reportSettings.staffUserIds.includes(message.authorId) ||
+            authorHasStaffRole ||
+            Boolean(message.authorHasModeratorPermissions);
+
+          const soleHumanMemberOverwrite =
+            chanMeta?.permissionMemberIds?.length === 1 &&
+            chanMeta.permissionMemberIds[0] === message.authorId;
+
+          // Only lock the speaker as ticket opener if they are NOT an admin/staff member
+          // (unless they personally opened the ticket and are the sole member overwrite)
+          if (!authorLooksLikeAdmin || soleHumanMemberOverwrite) {
+            discoveredOpenerId = message.authorId;
+          }
+        }
+
+        if (discoveredOpenerId) {
+          const updatedOpener = await this.repo.updateTicketSession(currentSession.id, {
+            playerDiscordId: discoveredOpenerId,
+            playerUsername:
+              discoveredOpenerId === message.authorId
+                ? message.authorUsername
+                : currentSession.playerUsername,
+          });
+          if (updatedOpener) {
+            currentSession = updatedOpener;
+            this.sessionManager.setSessionInMemory(currentSession);
+          }
+        }
+      }
+
+      // 2. Enforce Single Ticket Opener Rule:
+      // Every ticket has ONE ticket opener (`playerDiscordId`). Anyone else speaking in the ticket
+      // is an Admin / Staff member and must NEVER be treated as the player!
+      const isTicketOpener =
+        Boolean(currentSession.playerDiscordId) &&
+        message.authorId === currentSession.playerDiscordId;
+
+      if (!isTicketOpener) {
+        const trimmedContent = message.content.trim();
+        const cmdPrefix =
+          currentSession.configSnapshot.playerIntegrationConfig.commandPrefix || '.';
+        const isBotCommandInvocation =
+          trimmedContent.startsWith(cmdPrefix) ||
+          trimmedContent.startsWith('.') ||
+          trimmedContent.startsWith('!') ||
+          trimmedContent.startsWith('/') ||
+          trimmedContent.startsWith('?');
+
+        if (isBotCommandInvocation) {
+          this.logger.debug('Ignored admin/staff bot command inside ticket', {
+            sessionId: currentSession.id,
+            channelId: currentSession.channelId,
+          });
+          return;
+        }
+
+        const sanitizedStaff = sanitizeSensitiveContent(message.content);
+        await this.repo.appendTicketMessage({
+          sessionId: currentSession.id,
+          discordMessageId: message.id,
+          senderType: 'staff',
+          senderDiscordId: message.authorId,
+          content: sanitizedStaff.sanitizedText,
+          redacted: sanitizedStaff.redacted,
+        });
+
+        const handedOff = await this.repo.updateTicketSession(currentSession.id, {
           status: 'human_handoff',
           lastProcessedMessageId: message.id,
         });
-        if (handedOff) this.sessionManager.setSessionInMemory(handedOff);
+        if (handedOff) {
+          this.sessionManager.setSessionInMemory(handedOff);
+        }
+        this.logger.info('Admin/staff member replied in ticket; handed off to human staff', {
+          sessionId: currentSession.id,
+          channelId: currentSession.channelId,
+        });
         return;
       }
 
-      // If ticket is already ready_for_review and report was delivered, stay quiet so human staff can handle
-      if (session.status === 'ready_for_review' && session.reportDelivered) {
+      // 3. Message is confirmed from the single ticket opener!
+      // If intake is already complete & report delivered, respect post-completion follow-up setting
+      if (
+        currentSession.status === 'ready_for_review' &&
+        currentSession.reportDelivered &&
+        currentSession.configSnapshot.aiSettings.answerPostCompletionQuestions === false
+      ) {
         return;
       }
 
       // Per-ticket rate limit protection
       const withinRateLimit = this.queueManager.checkTicketRateLimit(
         message.channelId,
-        session.configSnapshot.aiSettings.perTicketRateLimitPerMinute
+        currentSession.configSnapshot.aiSettings.perTicketRateLimitPerMinute
       );
       if (!withinRateLimit) {
         this.logger.warn('Per-ticket message rate limit reached', {
-          sessionId: session.id,
-          channelId: session.channelId,
+          sessionId: currentSession.id,
+          channelId: currentSession.channelId,
         });
         return;
       }
@@ -118,9 +251,9 @@ export class ConversationService {
       // Redact passwords, recovery codes, or tokens BEFORE storing or sending to Groq
       const sanitized = sanitizeSensitiveContent(message.content);
       const storedMsg = await this.repo.appendTicketMessage({
-        sessionId: session.id,
+        sessionId: currentSession.id,
         discordMessageId: message.id,
-        senderType: isStaffAuthor ? 'staff' : 'player',
+        senderType: 'player',
         senderDiscordId: message.authorId,
         content: sanitized.sanitizedText,
         redacted: sanitized.redacted,
@@ -130,26 +263,13 @@ export class ConversationService {
         return;
       }
 
-      // Record player identity if not yet captured
-      let currentSession = session;
-      if (!currentSession.playerDiscordId && !isStaffAuthor) {
-        const updatedPlayer = await this.repo.updateTicketSession(currentSession.id, {
-          playerDiscordId: message.authorId,
-          playerUsername: message.authorUsername,
-          lastProcessedMessageId: message.id,
-        });
-        if (updatedPlayer) {
-          currentSession = updatedPlayer;
-          this.sessionManager.setSessionInMemory(currentSession);
-        }
-      } else {
-        const updatedMsgId = await this.repo.updateTicketSession(currentSession.id, {
-          lastProcessedMessageId: message.id,
-        });
-        if (updatedMsgId) {
-          currentSession = updatedMsgId;
-          this.sessionManager.setSessionInMemory(currentSession);
-        }
+      const updatedMeta = await this.repo.updateTicketSession(currentSession.id, {
+        playerUsername: currentSession.playerUsername ?? message.authorUsername,
+        lastProcessedMessageId: message.id,
+      });
+      if (updatedMeta) {
+        currentSession = updatedMeta;
+        this.sessionManager.setSessionInMemory(currentSession);
       }
 
       await this.messenger.sendTyping(currentSession.channelId);
@@ -328,11 +448,11 @@ export class ConversationService {
 
       let finalReply = aiOutput.turn.reply;
 
-      // Guardrail: If AI claimed completion while required questions or validation errors remain, ask the next missing question
+      // Guardrail: If AI claimed completion while required questions or validation errors remain, ask the next missing question naturally
       if (newValidationErrors.length > 0 && aiOutput.turn.complete) {
-        finalReply = `I couldn't quite validate part of that response: ${newValidationErrors[0]}`;
+        finalReply = `Hmm, that didn't look quite right — ${newValidationErrors[0]}. Mind double-checking and sending it again?`;
       } else if (!updatedProgress.isComplete && aiOutput.turn.complete && updatedProgress.nextRecommendedQuestion) {
-        finalReply = `${aiOutput.turn.reply}\n\nBefore I pass this to our team, ${updatedProgress.nextRecommendedQuestion.question}`;
+        finalReply = `${aiOutput.turn.reply}\n\nReal quick before I pass this over — ${updatedProgress.nextRecommendedQuestion.question}`;
       }
 
       const isReadyForReview =
