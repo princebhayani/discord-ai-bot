@@ -8,7 +8,16 @@ const BotEnvSchema = z.object({
   DISCORD_GUILD_ID: z.string().regex(/^\d{15,22}$/, 'DISCORD_GUILD_ID must be a Discord Snowflake'),
   GROQ_API_KEY: z.string().min(1, 'GROQ_API_KEY is required'),
   GROQ_MODEL: z.string().min(1).default('openai/gpt-oss-20b'),
-  SUPABASE_URL: z.string().url('SUPABASE_URL must be a valid URL'),
+  SUPABASE_URL: z
+    .string()
+    .url('SUPABASE_URL must be a valid https://<project-id>.supabase.co URL')
+    .refine(
+      (u) =>
+        (u.startsWith('https://') || u.startsWith('http://')) &&
+        !u.includes('sb_secret_') &&
+        !u.includes('sb_publishable_'),
+      'SUPABASE_URL must be your https://<project-id>.supabase.co Project URL (not a postgres:// URI or sb_secret_ key)'
+    ),
   SUPABASE_SECRET_KEY: z.string().min(
     1,
     'SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY) is required'
@@ -28,11 +37,15 @@ export function loadBotEnv(rawEnv: NodeJS.ProcessEnv = process.env): BotEnv {
   const supabaseSecret =
     rawEnv.SUPABASE_SECRET_KEY?.trim() || rawEnv.SUPABASE_SERVICE_ROLE_KEY?.trim() || '';
   const portRaw = rawEnv.PORT !== undefined && rawEnv.PORT.trim() !== '' ? rawEnv.PORT : '3000';
+  const rawSupabaseUrl = (rawEnv.SUPABASE_URL || rawEnv.NEXT_PUBLIC_SUPABASE_URL || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/\/+$/, '');
 
   const parsed = BotEnvSchema.parse({
     ...rawEnv,
     PORT: portRaw,
-    SUPABASE_URL: rawEnv.SUPABASE_URL || rawEnv.NEXT_PUBLIC_SUPABASE_URL,
+    SUPABASE_URL: rawSupabaseUrl,
     SUPABASE_SECRET_KEY: supabaseSecret,
   });
 

@@ -322,7 +322,10 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
         .maybeSingle();
 
       if (fetchError) {
-        throw new Error(`Failed reading server_settings: ${fetchError.message}`);
+        const detail = (fetchError as { details?: string }).details;
+        throw new Error(
+          `Failed reading server_settings: ${fetchError.message}${detail ? ` | ${detail}` : ''}`
+        );
       }
 
       if (existing) {
@@ -359,7 +362,10 @@ export class SupabaseBotRepository implements BotDatabaseRepository {
         .order('category_name', { ascending: true });
 
       if (error) {
-        throw new Error(`Failed reading ticket_category_configs: ${error.message}`);
+        const detail = (error as { details?: string }).details;
+        throw new Error(
+          `Failed reading ticket_category_configs: ${error.message}${detail ? ` | ${detail}` : ''}`
+        );
       }
 
       return (data ?? []).map((row: Record<string, unknown>) => {

@@ -1,5 +1,14 @@
+import dns from 'node:dns';
+import net from 'node:net';
 import 'dotenv/config';
 import { Events, type Client } from 'discord.js';
+
+// Force IPv4-first DNS resolution and disable Happy Eyeballs IPv6 auto-selection so
+// Node 22/24 undici fetch() connects reliably to Supabase from IPv4-only Render containers.
+dns.setDefaultResultOrder('ipv4first');
+if (typeof net.setDefaultAutoSelectFamily === 'function') {
+  net.setDefaultAutoSelectFamily(false);
+}
 import { buildLeastPrivilegeBotInviteUrl } from '@hrbot/shared';
 import { ConfigService } from './config/configService.js';
 import { loadBotEnv, type BotEnv } from './config/env.js';
@@ -66,9 +75,16 @@ export async function startAssistantBot(
 
   // 2. Initialize application logging + numeric memory diagnostics
   const logger = new Logger(env.LOG_LEVEL, 'ticket-ai-bot');
+  let supabaseHost = 'unknown';
+  try {
+    supabaseHost = new URL(env.SUPABASE_URL).host;
+  } catch {
+    supabaseHost = 'invalid_url';
+  }
   logger.info('Bootstrapping Discord Ticket AI Assistant', {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
+    supabaseHost,
     memoryMb: getMemoryUsageMb(),
   });
 
