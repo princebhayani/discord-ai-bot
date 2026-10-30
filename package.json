@@ -1,0 +1,27 @@
+{
+  "name": "discord-ticket-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-Powered Discord Ticket Conversation Assistant working alongside an existing ticket-management bot",
+  "packageManager": "pnpm@10.20.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/bot build && pnpm --filter @hrbot/dashboard build",
+    "build:bot": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/bot build",
+    "build:dashboard": "pnpm --filter @hrbot/shared build && pnpm --filter @hrbot/dashboard build",
+    "typecheck": "pnpm --filter @hrbot/shared typecheck && pnpm --filter @hrbot/bot typecheck && pnpm --filter @hrbot/dashboard typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:bot": "pnpm --filter @hrbot/bot dev",
+    "dev:dashboard": "pnpm --filter @hrbot/dashboard dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}
+
