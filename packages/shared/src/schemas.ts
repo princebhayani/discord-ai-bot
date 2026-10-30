@@ -315,6 +315,7 @@ export type AnswerPrimitive = z.infer<typeof AnswerPrimitiveSchema>;
 export const AiTurnResponseSchema = z.object({
   reply: z.string().trim().min(1).max(1900),
   extractedAnswers: z.record(z.string(), AnswerPrimitiveSchema).default({}),
+  unavailableFields: z.array(z.string()).default([]),
   missingFields: z.array(z.string()).default([]),
   requestedAction: RequestedAiActionSchema.default('none'),
   lookupTarget: z.string().max(100).nullable().optional().default(null),

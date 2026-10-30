@@ -1,6 +1,7 @@
 import type { APIEmbed } from 'discord.js';
 import {
   evaluateQuestionnaireProgress,
+  isUnavailableAnswer,
   sanitizeSensitiveContent,
   StaffReportPayloadSchema,
   type AnswerPrimitive,
@@ -83,12 +84,29 @@ export class ModeratorReportService {
       .slice(1, 5)
       .map((m) => truncate(m.content, 220));
 
-    // Merge verified player lookup profile + fallback from collected questionnaire fields
+    // Merge verified player lookup profile + fallback from collected questionnaire fields & chat
+    const rawTagAnswer =
+      typeof structuredAnswers.player_tag === 'string' ? structuredAnswers.player_tag : null;
+    const rawClanAnswer =
+      typeof structuredAnswers.clan_name === 'string' ? structuredAnswers.clan_name : null;
+
+    let selfReportedTh: string | null = null;
+    for (const pm of playerMessages) {
+      const thMatch = /\b(?:th|town\s*hall)\s*[:=-]?\s*(\d{1,2})\b/i.exec(pm.content);
+      if (thMatch?.[1]) {
+        selfReportedTh = `${thMatch[1]} (self-reported)`;
+        break;
+      }
+    }
+
     const mergedProfile: ParsedPlayerProfile = {
-      playerTag:
-        typeof structuredAnswers.player_tag === 'string' ? structuredAnswers.player_tag : null,
-      clanName:
-        typeof structuredAnswers.clan_name === 'string' ? structuredAnswers.clan_name : null,
+      playerTag: rawTagAnswer
+        ? isUnavailableAnswer(rawTagAnswer)
+          ? 'Unavailable (not provided)'
+          : rawTagAnswer
+        : null,
+      townHallLevel: selfReportedTh,
+      clanName: rawClanAnswer && !isUnavailableAnswer(rawClanAnswer) ? rawClanAnswer : null,
       extraFields: {},
     };
 

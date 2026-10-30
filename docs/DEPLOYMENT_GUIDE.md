@@ -181,7 +181,7 @@ Go to **Render -> Your Web Service -> Environment** and add these **10 rows** *(
 
 | Key Name on Render | Exact Value to Type | Purpose |
 |---|---|---|
-| `GROQ_MODEL` | `openai/gpt-oss-20b` | Default Groq model (supports strict `json_schema` + tools; can also be changed live in Dashboard) |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Recommended Groq model for natural human Discord chat (can also be changed live in Dashboard) |
 | `NODE_ENV` | `production` | Runs Node.js in production mode |
 | `NODE_OPTIONS` | `--dns-result-order=ipv4first --no-network-family-autoselection` | Forces IPv4 on Render so Node 22/24 `fetch()` connects to Supabase without IPv6 `fetch failed` timeouts |
 | `COREPACK_ENABLE_DOWNLOAD_PROMPT` | `0` | Prevents Corepack from pausing for `[Y/n]` download confirmation |

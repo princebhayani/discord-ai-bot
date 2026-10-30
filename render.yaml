@@ -27,7 +27,7 @@ services:
       - key: LOG_LEVEL
         value: info
       - key: GROQ_MODEL
-        value: openai/gpt-oss-20b
+        value: llama-3.3-70b-versatile
       - key: DISCORD_BOT_TOKEN
         sync: false
       - key: DISCORD_CLIENT_ID

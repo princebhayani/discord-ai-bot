@@ -40,7 +40,7 @@ export interface OverviewDashboardData {
   botOnline: boolean;
 }
 
-const DEFAULT_MODEL_FALLBACK = process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-20b';
+const DEFAULT_MODEL_FALLBACK = process.env.GROQ_MODEL?.trim() || 'llama-3.3-70b-versatile';
 
 function mapServerRow(row: Record<string, unknown>): ServerSettings {
   const aiObj = (row.ai_settings as Record<string, unknown> | null) ?? {};

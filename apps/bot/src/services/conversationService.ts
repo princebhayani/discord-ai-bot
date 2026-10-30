@@ -1,9 +1,13 @@
 import {
+  detectUnavailableResponseIntent,
   evaluateQuestionnaireProgress,
+  formatUnavailableAnswer,
+  isUnavailableAnswer,
   sanitizeSensitiveContent,
   validateAnswerValue,
   type AnswerPrimitive,
   type ParsedPlayerProfile,
+  type QuestionnaireQuestion,
 } from '@hrbot/shared';
 import type { ConfigService } from '../config/configService.js';
 import {
@@ -292,10 +296,64 @@ export class ConversationService {
       }
 
       const latestProfile = this.mergeCompletedLookups(lookupRecords.map((l) => l.parsedData));
-      const initialProgress = evaluateQuestionnaireProgress(
+      let initialProgress = evaluateQuestionnaireProgress(
         currentSession.configSnapshot.category.questions,
         validAnswers
       );
+
+      // Pre-turn check: If opener explicitly says they don't have / can't check the requested info
+      // (e.g. "i don't have", "idk", "can't open game"), mark that question [Unavailable] IMMEDIATELY
+      // so the AI never nags or repeats the question on subsequent turns.
+      const justMarkedUnavailableKeys: string[] = [];
+      const assistantMessages = history.filter((m) => m.senderType === 'assistant');
+      if (
+        initialProgress.missingRequiredQuestions.length > 0 &&
+        assistantMessages.length > 0 &&
+        detectUnavailableResponseIntent(sanitized.sanitizedText)
+      ) {
+        const lastAssistantContent = assistantMessages[assistantMessages.length - 1]?.content ?? '';
+        const targetQuestion = this.selectUnavailableTargetQuestion(
+          initialProgress.missingRequiredQuestions,
+          sanitized.sanitizedText,
+          lastAssistantContent,
+          initialProgress.nextRecommendedQuestion
+        );
+
+        if (targetQuestion) {
+          const unavailableVal = formatUnavailableAnswer(
+            'Opener said they do not have this right now'
+          );
+          validAnswers[targetQuestion.key] = unavailableVal;
+          delete invalidFieldErrors[targetQuestion.key];
+          justMarkedUnavailableKeys.push(targetQuestion.key);
+
+          await this.repo.upsertTicketAnswer({
+            sessionId: currentSession.id,
+            questionKey: targetQuestion.key,
+            answerValue: unavailableVal,
+            rawText: sanitized.sanitizedText,
+            validated: true,
+            validationNote: 'Opener stated unavailable',
+          });
+
+          initialProgress = evaluateQuestionnaireProgress(
+            currentSession.configSnapshot.category.questions,
+            validAnswers
+          );
+        }
+      }
+
+      const hasNonUnavailableAnswer = Object.values(validAnswers).some(
+        (v) => v !== null && v !== undefined && !isUnavailableAnswer(v)
+      );
+      const playerMessageContents = history
+        .filter((m) => m.senderType === 'player')
+        .map((m) => m.content);
+      const awaitingUnavailableBackupContext =
+        justMarkedUnavailableKeys.length > 0 &&
+        !hasNonUnavailableAnswer &&
+        initialProgress.missingRequiredQuestions.length === 0 &&
+        !this.hasSubstantivePlayerContext(playerMessageContents);
 
       let aiOutput;
       try {
@@ -307,6 +365,8 @@ export class ConversationService {
           progress: initialProgress,
           playerProfile: latestProfile,
           recentSecretRedacted: sanitized.redacted,
+          justMarkedUnavailableKeys,
+          awaitingUnavailableBackupContext,
           signal,
         });
 
@@ -346,6 +406,28 @@ export class ConversationService {
         currentSession.configSnapshot.category.questions.map((q) => [q.key, q])
       );
 
+      // Record any unavailableFields flagged by the AI turn as well
+      for (const unavailKey of aiOutput.turn.unavailableFields ?? []) {
+        const qDef = questionsByKey.get(unavailKey);
+        if (!qDef || validAnswers[unavailKey] !== undefined) continue;
+        const unavailableVal = formatUnavailableAnswer(
+          'Opener stated they do not have this right now'
+        );
+        validAnswers[unavailKey] = unavailableVal;
+        delete invalidFieldErrors[unavailKey];
+        if (!justMarkedUnavailableKeys.includes(unavailKey)) {
+          justMarkedUnavailableKeys.push(unavailKey);
+        }
+        await this.repo.upsertTicketAnswer({
+          sessionId: currentSession.id,
+          questionKey: unavailKey,
+          answerValue: unavailableVal,
+          rawText: sanitized.sanitizedText,
+          validated: true,
+          validationNote: 'Opener stated unavailable',
+        });
+      }
+
       const newValidationErrors: string[] = [];
       let autoTriggeredLookup: { action: string; target: string } | null = null;
 
@@ -355,6 +437,29 @@ export class ConversationService {
         }
         const qDef = questionsByKey.get(key);
         if (!qDef) continue;
+
+        const extractedText = String(extractedVal).trim();
+        if (
+          detectUnavailableResponseIntent(extractedText) ||
+          /^(?:none|n\/a|unavailable|unknown|no\s*tag)$/i.test(extractedText)
+        ) {
+          if (validAnswers[key] === undefined) {
+            const unavailableVal = formatUnavailableAnswer(
+              'Opener stated they do not have this right now'
+            );
+            validAnswers[key] = unavailableVal;
+            delete invalidFieldErrors[key];
+            await this.repo.upsertTicketAnswer({
+              sessionId: currentSession.id,
+              questionKey: key,
+              answerValue: unavailableVal,
+              rawText: extractedText,
+              validated: true,
+              validationNote: 'Opener stated unavailable',
+            });
+          }
+          continue;
+        }
 
         const check = validateAnswerValue(qDef, extractedVal);
         if (check.valid) {
@@ -369,12 +474,20 @@ export class ConversationService {
             validationNote: null,
           });
 
-          if (qDef.triggerLookupAction && check.normalizedValue !== null) {
+          if (
+            qDef.triggerLookupAction &&
+            check.normalizedValue !== null &&
+            !isUnavailableAnswer(check.normalizedValue)
+          ) {
             autoTriggeredLookup = {
               action: qDef.triggerLookupAction,
               target: String(check.normalizedValue),
             };
-          } else if (qDef.type === 'player_tag' && check.normalizedValue !== null) {
+          } else if (
+            qDef.type === 'player_tag' &&
+            check.normalizedValue !== null &&
+            !isUnavailableAnswer(check.normalizedValue)
+          ) {
             autoTriggeredLookup = {
               action: 'lookup_player',
               target: String(check.normalizedValue),
@@ -401,10 +514,17 @@ export class ConversationService {
           ? aiOutput.turn.requestedAction
           : autoTriggeredLookup?.action ?? null;
 
+      const aiLookupTarget =
+        aiOutput.turn.lookupTarget && !isUnavailableAnswer(aiOutput.turn.lookupTarget)
+          ? aiOutput.turn.lookupTarget
+          : null;
+      const validPlayerTagTarget =
+        typeof validAnswers.player_tag === 'string' && !isUnavailableAnswer(validAnswers.player_tag)
+          ? validAnswers.player_tag
+          : null;
+
       const requestedLookupTarget =
-        aiOutput.turn.lookupTarget ??
-        autoTriggeredLookup?.target ??
-        (typeof validAnswers.player_tag === 'string' ? validAnswers.player_tag : null);
+        aiLookupTarget ?? autoTriggeredLookup?.target ?? validPlayerTagTarget;
 
       if (
         requestedLookupAction &&
@@ -450,17 +570,20 @@ export class ConversationService {
 
       // Guardrail: If AI claimed completion while required questions or validation errors remain, ask the next missing question naturally
       if (newValidationErrors.length > 0 && aiOutput.turn.complete) {
-        finalReply = `Hmm, that didn't look quite right — ${newValidationErrors[0]}. Mind double-checking and sending it again?`;
+        finalReply = `hmm, that didn't look quite right - ${newValidationErrors[0]}. mind double-checking and sending it again?`;
       } else if (!updatedProgress.isComplete && aiOutput.turn.complete && updatedProgress.nextRecommendedQuestion) {
-        finalReply = `${aiOutput.turn.reply}\n\nReal quick before I pass this over — ${updatedProgress.nextRecommendedQuestion.question}`;
+        finalReply = `${aiOutput.turn.reply}\n\nreal quick before i pass this over - ${updatedProgress.nextRecommendedQuestion.question}`;
       }
 
       const isReadyForReview =
-        (updatedProgress.isComplete && newValidationErrors.length === 0 && aiOutput.turn.complete) ||
-        (updatedProgress.isComplete &&
-          updatedProgress.missingOptionalQuestions.length === 0 &&
-          newValidationErrors.length === 0) ||
-        aiOutput.turn.requestedAction === 'handoff_to_staff';
+        aiOutput.turn.requestedAction === 'handoff_to_staff' ||
+        (!awaitingUnavailableBackupContext &&
+          ((updatedProgress.isComplete &&
+            newValidationErrors.length === 0 &&
+            aiOutput.turn.complete) ||
+            (updatedProgress.isComplete &&
+              updatedProgress.missingOptionalQuestions.length === 0 &&
+              newValidationErrors.length === 0)));
 
       if (signal.aborted || this.queueManager.isClosingOrAborted(currentSession.channelId)) {
         return;
@@ -524,6 +647,54 @@ export class ConversationService {
       Object.assign(merged.extraFields, p.extraFields);
     }
     return merged;
+  }
+
+  private selectUnavailableTargetQuestion(
+    missingRequired: QuestionnaireQuestion[],
+    playerMessage: string,
+    lastAssistantMessage: string,
+    nextRecommended: QuestionnaireQuestion | null
+  ): QuestionnaireQuestion | null {
+    if (missingRequired.length === 0) return null;
+    if (missingRequired.length === 1) return missingRequired[0] ?? null;
+
+    const combinedContext = `${playerMessage} ${lastAssistantMessage}`.toLowerCase();
+    if (/\btag\b/.test(combinedContext)) {
+      const tagQ = missingRequired.find(
+        (q) => q.type === 'player_tag' || q.key.toLowerCase().includes('tag')
+      );
+      if (tagQ) return tagQ;
+    }
+
+    for (const q of missingRequired) {
+      const keyTokens = q.key.toLowerCase().split('_').filter((t) => t.length >= 3);
+      if (keyTokens.some((tok) => lastAssistantMessage.toLowerCase().includes(tok))) {
+        return q;
+      }
+    }
+
+    return nextRecommended ?? missingRequired[0] ?? null;
+  }
+
+  private hasSubstantivePlayerContext(playerMessages: string[]): boolean {
+    for (const msg of playerMessages) {
+      const trimmed = msg.trim();
+      if (!trimmed) continue;
+      if (/^(?:hi+|hey+|hello+|yo+|sup|wassup|hola|hlo)[!.?\s]*$/i.test(trimmed)) {
+        continue;
+      }
+      if (
+        detectUnavailableResponseIntent(trimmed) &&
+        trimmed.length < 40 &&
+        !/\b(?:th\s*\d{1,2}|town\s*hall|join|looking\s+for|clan|cwl|war|raid|help|issue|appeal)\b/i.test(
+          trimmed
+        )
+      ) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 }
 

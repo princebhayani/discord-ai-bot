@@ -2,6 +2,7 @@ import Groq from 'groq-sdk';
 import {
   AiTurnResponseSchema,
   getGroqModelCapabilities,
+  isUnavailableAnswer,
   type AiTurnResponse,
   type AnswerPrimitive,
   type ParsedPlayerProfile,
@@ -21,6 +22,8 @@ export interface AiTurnInput {
   progress: QuestionnaireProgress;
   playerProfile: ParsedPlayerProfile | null;
   recentSecretRedacted: boolean;
+  justMarkedUnavailableKeys?: string[];
+  awaitingUnavailableBackupContext?: boolean;
   signal?: AbortSignal;
 }
 
@@ -147,6 +150,12 @@ export function buildStrictTurnJsonSchema(
         required: requiredAnswerKeys,
         additionalProperties: false,
       },
+      unavailableFields: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Question keys the opener stated they do not have, do not know, or cannot check right now.',
+      },
       missingFields: {
         type: 'array',
         items: { type: 'string' },
@@ -177,6 +186,7 @@ export function buildStrictTurnJsonSchema(
     required: [
       'reply',
       'extractedAnswers',
+      'unavailableFields',
       'missingFields',
       'requestedAction',
       'lookupTarget',
@@ -194,21 +204,131 @@ const LEGACY_ROBOTIC_INSTRUCTIONS =
 const LEGACY_ROBOTIC_FALLBACK =
   'Thank you for your message. A human moderator will follow up with you shortly.';
 
+function normalizeSentenceForComparison(sentence: string): string {
+  return sentence
+    .toLowerCase()
+    .replace(/^\s*(?:no\s+worries|all\s+good|got\s+it|gotcha|sure|hey)\b[!,.:\s-]*/i, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Deterministic post-processor that strips dead-giveaway LLM artifacts, placeholder symbols,
+ * hallucinated Clash UI instructions, repetitive "No worries" openers, and verbatim sentence clones.
+ */
+export function polishHumanDiscordReply(
+  rawReply: string,
+  previousAssistantReplies: string[] = []
+): string {
+  let text = rawReply.trim();
+  if (!text) return rawReply;
+
+  // 1. Strip robotic parenthetical tag hints like "(#...)" or "(e.g., #ABC123)"
+  text = text
+    .replace(/\s*\(#\.{2,}\)/g, '')
+    .replace(/\s*\((?:e\.?g\.?,?\s*|like\s+)?#[A-Z0-9.]{2,12}\)/gi, '');
+
+  // 2. Replace AI em-dashes and spaced en-dashes with casual Discord hyphens
+  text = text.replace(/\s*—\s*/g, ' - ').replace(/\s+–\s+/g, ' - ');
+
+  // 3. Catch hallucinated Clash of Clans "three dots" profile UI instructions
+  if (/\bthree\s+dots\b/i.test(text) && /\b(?:tag|profile)\b/i.test(text)) {
+    return "in clash, tap your xp level in the top-left corner to open your profile - your # tag is right under your name with a small share/copy icon next to it. all good if you can't grab it right now though.";
+  }
+
+  // 4. Rewrite dead-giveaway corporate brush-offs
+  text = text
+    .replace(
+      /\bwe['’]?ll keep you in mind(?:[^.!?]*)[.!?]?/gi,
+      "i've passed your info over to the leaders so someone can hop in here soon."
+    )
+    .replace(
+      /\ba staff member will review your (?:request|ticket)(?:[^.!?]*)[.!?]?/gi,
+      "i've passed your info over to the leaders - one of them will check in here soon."
+    );
+
+  // 5. Anti-verbatim-clone guard: drop sentences (>=28 normalized chars) copied from recent bot turns
+  if (previousAssistantReplies.length > 0) {
+    const prevNorms: string[] = [];
+    for (const prev of previousAssistantReplies.slice(-2)) {
+      const prevSentences = prev.match(/[^.!?]+[.!?]*/g) ?? [prev];
+      for (const ps of prevSentences) {
+        const norm = normalizeSentenceForComparison(ps);
+        if (norm.length >= 28) {
+          prevNorms.push(norm);
+        }
+      }
+    }
+
+    if (prevNorms.length > 0) {
+      const currentSentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
+      const kept = currentSentences.filter((cs) => {
+        const norm = normalizeSentenceForComparison(cs);
+        if (norm.length < 28) return true;
+        return !prevNorms.some(
+          (pn) => norm === pn || norm.includes(pn) || pn.includes(norm)
+        );
+      });
+
+      if (kept.length === 0) {
+        return "haha my bad for repeating myself - i've got your notes down for the leaders so one of them will jump in here directly.";
+      }
+      text = kept.join(' ').trim();
+    }
+  }
+
+  // 6. Prevent repeating "No worries" if already used in recent replies
+  const recentUsedNoWorries = previousAssistantReplies
+    .slice(-3)
+    .some((r) => /^\s*no\s+worries\b/i.test(r));
+  if (recentUsedNoWorries && /^\s*no\s+worries[!,.:\s-]*/i.test(text)) {
+    const remainder = text.replace(/^\s*no\s+worries[!,.:\s-]*/i, '').trim();
+    if (remainder.length > 0) {
+      const loweredStart =
+        /^(?:I\b|TH\d|CWL\b)/.test(remainder)
+          ? remainder
+          : `${remainder.charAt(0).toLowerCase()}${remainder.slice(1)}`;
+      text = `all good, ${loweredStart}`;
+    }
+  }
+
+  // 7. Cap exclamation-mark spam (at most 1 "!" per message)
+  let seenExclamation = false;
+  text = text.replace(/!+/g, () => {
+    if (!seenExclamation) {
+      seenExclamation = true;
+      return '!';
+    }
+    return '.';
+  });
+
+  text = text
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,!?])/g, '$1')
+    .trim();
+
+  return text || rawReply.trim();
+}
+
 export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string {
   const {
     snapshot,
+    conversationHistory,
     validAnswers,
     invalidFieldErrors,
     progress,
     playerProfile,
     recentSecretRedacted,
+    justMarkedUnavailableKeys = [],
+    awaitingUnavailableBackupContext = false,
   } = input;
 
   const ai = snapshot.aiSettings;
   const humanize = ai.humanizeConversation !== false;
   const personaDisplay = ai.personaName?.trim()
-    ? `${ai.personaName.trim()} (for "${snapshot.guildName}")`
-    : `a recruiter & ticket helper for "${snapshot.guildName}"`;
+    ? `${ai.personaName.trim()} (front-desk recruiter & ticket helper for "${snapshot.guildName}")`
+    : `a front-desk recruiter & ticket helper for "${snapshot.guildName}"`;
 
   const currentDateText = now.toLocaleDateString('en-US', {
     weekday: 'long',
@@ -240,6 +360,15 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
       ? snapshot.playerIntegrationConfig.supportedActions
       : [];
 
+  const unavailableKeys = Object.entries(validAnswers)
+    .filter(([, val]) => isUnavailableAnswer(val))
+    .map(([key]) => key);
+
+  const previousAssistantReplies = conversationHistory
+    .filter((m) => m.senderType === 'assistant')
+    .map((m) => m.content)
+    .slice(-3);
+
   const knowledge = ai.serverKnowledge;
   const knowledgeBlocks = [
     knowledge?.serverOverview?.trim()
@@ -267,33 +396,55 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
     ai.toneStyle === 'professional'
       ? 'Tone: Friendly, clear, and respectful without stiff corporate jargon.'
       : ai.toneStyle === 'warm_friendly'
-        ? 'Tone: Warm, welcoming, upbeat Discord community style.'
-        : 'Tone: Natural, casual Discord chat—like a real human recruiter/moderator typing in Discord (short sentences, natural contractions like "you\'re", "we\'ll", "gotcha", "no rush").';
+        ? 'Tone: Warm, welcoming Discord community style.'
+        : 'Tone: Chill, authentic Discord gamer/recruiter style - short 1-2 sentence replies, relaxed flow, normal hyphens (" - "), casual words ("all good", "nice", "sweet", "gotcha"), zero corporate customer-service polish.';
 
   const humanStyleSection = humanize
     ? [
-        `# Human Discord Voice Rules (CRITICAL)`,
+        `# Human Discord Cover & Voice Rules (CRITICAL)`,
         `- ${toneDirective}`,
-        `- Keep replies concise: usually 1–2 short sentences (never a wall of text).`,
-        `- STRICTLY BANNED AI CLICHÉS — NEVER write phrases like:`,
-        `  * "Could you please provide..." or "Could you please share..." (say "What's your player tag?" or "Drop your player tag (#...) whenever you're ready!")`,
-        `  * "How can I help you today?" or "How may I assist you?" (say "Hey! Looking to join ${snapshot.guildName}, or need help with something?")`,
-        `  * "Thanks for providing your player tag." or "Thank you for your patience!"`,
-        `  * "A staff member will review your request shortly." (vary it naturally, e.g., "Got it! I've passed your tag to the leaders—someone will check your profile and ping you right here soon.")`,
-        `- NEVER repeat yourself: Check your previous message! If you just asked for their tag and they say "sure", "ok", "wait", or "one sec", DO NOT ask the question again—just say something natural like "No rush, drop it whenever you're ready 👍" or "Go for it!".`,
-        `- Small talk & awareness: Today is ${currentDateText}. If the opener asks a quick casual question (like what day it is or how joining works), answer it naturally like a normal person and smoothly continue.`,
-        `- Honesty boundary: Never claim you personally can accept/kick/ban in-game (leaders handle invites & final decisions), and if directly asked whether you're a bot, be honest casually without sounding robotic.`,
+        `- Write like a real person typing in Discord: 1-2 short sentences (10-30 words). Almost never use exclamation marks (at most ONE "!" if genuinely hyped; normal periods and question marks sound 10x more human).`,
+        `- STRICTLY BANNED AI CLICHÉS - NEVER write any of these:`,
+        `  * NEVER write placeholder symbols in parentheses like "#..." - just say "your player tag" or "your in-game tag".`,
+        `  * NEVER say "We'll keep you in mind", "we'll get you set up", "whenever you're ready", "whenever you have it", or "when you can".`,
+        `  * NEVER repeat "No worries" across turns - vary your openers ("all good", "fair enough", "nice", "sweet", or jump straight into your reply with no filler).`,
+        `  * NEVER robotically echo stats like "Got it, TH12." - react naturally like a clan mate ("nice, th12 works for us" or "sweet, we've got room for a th12").`,
+        `  * NEVER say "Could you please provide", "How can I help you today?", "Thank you for your patience", or "A staff member will review your request shortly."`,
+        ``,
+        `# Situational Cover Playbook`,
+        `- Bare greeting ("hi", "hey", "yo"): Don't bark a stiff command! Greet them back casually and ask if they're looking to join ${snapshot.guildName} (and if so, to share their player tag so you can check out their base) or if they need help with something else.`,
+        `- Opener says they DON'T have / can't check something ("i don't have", "idk", "can't open game"):`,
+        `  * Accept it immediately with zero pressure! NEVER ask for an [Unavailable] field again on ANY later turn (do NOT say "drop your tag when you get a chance"!).`,
+        `  * If you haven't got any info about them yet, ask ONE easy backup question (like their Town Hall level and what kind of clan vibe/spot they're looking for) with complete=false.`,
+        `  * As soon as they tell you their backup info (e.g. "im th12 and looking for home"), acknowledge it warmly, let them know you've passed their details over to the leaders so someone can hop in here soon, and set complete=true!`,
+        `- Opener says "wait", "sure", "ok", "one sec": Don't repeat the question you just asked - just say "take your time" or "go for it".`,
+        `- If the opener asks HOW to find their Clash of Clans player tag: NEVER call Clash "the app" and NEVER invent a "three dots" button (there is no three-dots menu!). Explain accurately: open Clash, tap your XP level in the top-left corner to open your profile, and your # tag is right under your name with a little share/copy icon next to it - and remind them it's totally fine if they can't grab it right now.`,
+        `- Banter / corrections / "i catch you AI" / "are you a bot?": NEVER panic or copy-paste your previous reply! Be chill, self-aware, and honest in one relaxed sentence (e.g. laugh it off, own that you're the server's ticket helper bot grabbing quick info for the leaders, and let them know a human leader will hop in here shortly). Never claim you personally send in-game clan invites or bans.`,
+        `- Awareness: Today is ${currentDateText}.`,
       ].join('\n')
     : `Today's date (UTC): ${currentDateText}.\n${toneDirective}`;
 
-  const intakeStateNote = progress.isComplete
-    ? `INTAKE STATUS: ALL REQUIRED ANSWERS ARE ALREADY COLLECTED! Do NOT repeat "a staff member will review your request shortly" if you already said that. Answer any follow-up question (like "but when?" or clan questions) naturally using the Server Knowledge below (if timing isn't specified, let them know leaders check open tickets as soon as they hop online and will ping them right here), and keep complete=true.`
-    : `INTAKE STATUS: Still gathering required info (${progress.missingRequiredQuestions.map((q) => q.key).join(', ') || 'none'}).`;
+  let intakeStateNote: string;
+  if (awaitingUnavailableBackupContext) {
+    intakeStateNote = `INTAKE STATUS: Opener just stated they DO NOT have (${justMarkedUnavailableKeys.join(', ')}). It is now marked [Unavailable] - DO NOT ask for it again! For this 1 turn ONLY, keep complete=false, say "all good" casually, and ask ONE quick backup question (such as their Town Hall level and what kind of clan spot they want) so leadership has context.`;
+  } else if (progress.isComplete) {
+    const unavailReminder =
+      unavailableKeys.length > 0
+        ? ` ABSOLUTE RULE: (${unavailableKeys.join(', ')}) was marked [Unavailable] - NEVER mention, hint at, or ask for (${unavailableKeys.join(', ')}) again!`
+        : '';
+    intakeStateNote = `INTAKE STATUS: ALL REQUIRED INFO IS COMPLETE!${unavailReminder} Acknowledge what they shared naturally, let them know you've passed their info to the leaders who will check this ticket soon (if you already told them that earlier, don't repeat it - just answer their follow-up casually using the Server Knowledge below), write a clear issueSummary & neutralAssessment including any self-reported details (TH level, raid weekend, etc.), and keep complete=true.`;
+  } else {
+    const unavailReminder =
+      unavailableKeys.length > 0
+        ? ` Never re-ask unavailable fields (${unavailableKeys.join(', ')}).`
+        : '';
+    intakeStateNote = `INTAKE STATUS: Still gathering (${progress.missingRequiredQuestions.map((q) => q.key).join(', ') || 'none'}).${unavailReminder} If the opener states they don't have or can't check a field, list its key in unavailableFields.`;
+  }
 
   return [
     `# Role & Persona`,
     `You are ${personaDisplay} chatting with the ticket opener inside category "${snapshot.category.categoryName}".`,
-    `There is strictly ONE ticket opener in this ticket—all user messages in this conversation come from that ticket opener.`,
+    `There is strictly ONE ticket opener in this ticket - all user messages in this conversation come from that ticket opener.`,
     ``,
     humanStyleSection,
     ``,
@@ -308,19 +459,19 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
     `1. ${intakeStateNote}`,
     `2. Understand natural-language replies and extract ALL answers provided in the player's latest message (even if they answered multiple questions at once).`,
     `3. If the player corrects a previous answer, include the updated value in extractedAnswers; otherwise set keys not mentioned in the latest message to null.`,
-    `4. NEVER re-ask a question already present in Already Collected Valid Answers unless the player asks to change it.`,
+    `4. NEVER re-ask any question already present in Already Collected Valid Answers (including any field marked [Unavailable]) unless the player brings it up themselves.`,
     `5. Ask AT MOST ONE natural question at a time.`,
     `6. Never ask for passwords, recovery codes, or authentication secrets.`,
     recentSecretRedacted
       ? `IMPORTANT: The player's last message contained sensitive credential text that was automatically redacted. Remind them casually never to share passwords or recovery codes on Discord.`
       : '',
-    `7. Approved lookup actions via requestedAction: ${lookupAllowed.length > 0 ? lookupAllowed.join(', ') : 'none (external lookup disabled)'}. Request lookup_player as soon as a player_tag is shared if not yet looked up.`,
-    `8. When all required questions are answered, set complete=true, write a concise factual issueSummary and neutralAssessment for leaders, and let the opener know naturally that you've passed their details to leadership.`,
+    `7. Approved lookup actions via requestedAction: ${lookupAllowed.length > 0 ? lookupAllowed.join(', ') : 'none (external lookup disabled)'}. Request lookup_player ONLY when a real # player_tag is provided (never when [Unavailable]).`,
+    `8. When intake is complete, set complete=true and write a concise factual issueSummary and neutralAssessment for leaders.`,
     ``,
     `# Configured Active Questionnaire`,
     JSON.stringify(questionsSpec, null, 2),
     ``,
-    `# Already Collected Valid Answers (DO NOT REPEAT THESE QUESTIONS)`,
+    `# Already Collected Valid Answers (NEVER RE-ASK THESE)`,
     JSON.stringify(validAnswers, null, 2),
     ``,
     Object.keys(invalidFieldErrors).length > 0
@@ -329,11 +480,14 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
     playerProfile
       ? `# Verified In-Game Player Profile (from DOT command lookup)\n${JSON.stringify(playerProfile, null, 2)}`
       : '',
+    previousAssistantReplies.length > 0
+      ? `# Your Recent Replies in This Ticket (DO NOT REPEAT ANY SENTENCE OR OPENER FROM THESE)\n${previousAssistantReplies.map((r, idx) => `- Turn -${previousAssistantReplies.length - idx}: ${JSON.stringify(r)}`).join('\n')}`
+      : '',
     `# Category FAQs`,
     faqText,
     ``,
     `# Output Format`,
-    `Respond strictly with a single valid JSON object matching keys: reply (string), extractedAnswers (object mapping question keys to extracted value or null), missingFields (string[]), requestedAction ("none" | "lookup_player" | "lookup_clan" | "lookup_profile" | "handoff_to_staff"), lookupTarget (string | null), issueSummary (string | null), neutralAssessment (string | null), complete (boolean).`,
+    `Respond strictly with a single valid JSON object matching keys: reply (string), extractedAnswers (object mapping question keys to extracted value or null), unavailableFields (string[]), missingFields (string[]), requestedAction ("none" | "lookup_player" | "lookup_clan" | "lookup_profile" | "handoff_to_staff"), lookupTarget (string | null), issueSummary (string | null), neutralAssessment (string | null), complete (boolean).`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -435,8 +589,19 @@ export class GroqAiService {
       }
 
       const parsedJson = this.parseAndValidateJson(rawResult, effectiveFallback);
+      const prevAssistantMsgs = conversationHistory
+        .filter((m) => m.senderType === 'assistant')
+        .map((m) => m.content);
+      const finalTurn =
+        snapshot.aiSettings.humanizeConversation !== false
+          ? {
+              ...parsedJson.turn,
+              reply: polishHumanDiscordReply(parsedJson.turn.reply, prevAssistantMsgs),
+            }
+          : parsedJson.turn;
+
       return {
-        turn: parsedJson.turn,
+        turn: finalTurn,
         usage: {
           promptTokens: rawResult.promptTokens,
           completionTokens: rawResult.completionTokens,

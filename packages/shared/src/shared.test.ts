@@ -6,9 +6,12 @@ import {
   ALLOWED_CHANNEL_PERMISSIONS,
   assertLeastPrivilegePermissions,
   buildLeastPrivilegeBotInviteUrl,
+  detectUnavailableResponseIntent,
   evaluateQuestionnaireProgress,
   FORBIDDEN_PERMISSIONS,
+  formatUnavailableAnswer,
   getGroqModelCapabilities,
+  isUnavailableAnswer,
   parseQuickDotCommands,
   QuestionnaireQuestionSchema,
   REQUIRED_PERMISSION_BITFIELD,
@@ -213,5 +216,28 @@ describe('Phase 1: @hrbot/shared Foundation & Database Schema', () => {
 
     const bad = parseQuickDotCommands('.p @everyone');
     expect(bad.valid).toBe(false);
+  });
+
+  it('detects unavailable answer intent ("i don\'t have", "idk") without false positives', () => {
+    expect(detectUnavailableResponseIntent("i don't have")).toBe(true);
+    expect(detectUnavailableResponseIntent("i said i don't have tag")).toBe(true);
+    expect(detectUnavailableResponseIntent('idk')).toBe(true);
+    expect(detectUnavailableResponseIntent("can't open game rn")).toBe(true);
+    expect(detectUnavailableResponseIntent('#9RQU2YQPL')).toBe(false);
+    expect(detectUnavailableResponseIntent('im th12 and looking for home')).toBe(false);
+    expect(detectUnavailableResponseIntent('yeah how can i find tag ?')).toBe(false);
+
+    const tagQ: QuestionnaireQuestion = QuestionnaireQuestionSchema.parse({
+      key: 'player_tag',
+      question: "What's your player tag?",
+      type: 'player_tag',
+      required: true,
+    });
+    const unavailableVal = formatUnavailableAnswer();
+    expect(isUnavailableAnswer(unavailableVal)).toBe(true);
+    expect(validateAnswerValue(tagQ, unavailableVal).valid).toBe(true);
+    expect(evaluateQuestionnaireProgress([tagQ], { player_tag: unavailableVal }).isComplete).toBe(
+      true
+    );
   });
 });

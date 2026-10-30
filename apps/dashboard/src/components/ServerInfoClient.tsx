@@ -3,11 +3,12 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Save, Sparkles, Wand2 } from 'lucide-react';
-import type {
-  AiSettings,
-  ServerSettings,
-  TicketDetectionConfig,
-  ToneStyle,
+import {
+  KNOWN_GROQ_MODELS,
+  type AiSettings,
+  type ServerSettings,
+  type TicketDetectionConfig,
+  type ToneStyle,
 } from '@hrbot/shared';
 import { useSaveStatus } from '@/hooks/useSaveStatus';
 import { StatusBanner } from '@/components/layout/StatusBanner';
@@ -47,24 +48,33 @@ export function ServerInfoClient({
 
   function fillRecruitmentStarterTemplate() {
     const name = guildName.trim() || 'Boom House';
+    if (
+      defaultWelcome.includes('automated support assistant') ||
+      defaultWelcome.trim().toLowerCase().startsWith('hi thank you for choosing')
+    ) {
+      setDefaultWelcome(
+        `hey {user}! welcome to ${name} - you looking to join one of our clans, or need help with something?`
+      );
+    }
     setAiSettings((prev) => ({
       ...prev,
+      model: 'llama-3.3-70b-versatile',
       personaName: prev.personaName || 'Duke The Recruiter',
       toneStyle: 'human_casual',
       humanizeConversation: true,
       serverKnowledge: {
         serverOverview:
           prev.serverKnowledge.serverOverview ||
-          `${name} is an active, friendly Clash clan family focused on wars, CWL, raid weekends, and helping members grow together in a chill environment.`,
+          `${name} is an active, chill Clash of Clans family focused on wars, CWL, raid weekends, and helping members grow together.`,
         clanRequirementsAndRules:
           prev.serverKnowledge.clanRequirementsAndRules ||
           `- Main Clan (${name}): Active daily players, use both war attacks when opted in, participate in Raid Weekends & Clan Games.\n- Be respectful in chat, donate what is requested, and follow war mail plans.`,
         joiningProcessAndTiming:
           prev.serverKnowledge.joiningProcessAndTiming ||
-          `1. Share your in-game Player Tag (#...) in this ticket.\n2. We pull up your stats and pass them to leadership.\n3. Leaders check open tickets regularly throughout the day (usually within 15–60 minutes depending on timezones) and will ping you right here with clan placement and an invite!`,
+          `1. Share your in-game player tag in this ticket (or just tell us your Town Hall level if you can't open the game right now).\n2. We pass your details straight to leadership.\n3. Leaders check open tickets regularly throughout the day (usually within 15-60 minutes depending on timezones) and will jump right in here to get you placed.`,
         additionalNotes:
           prev.serverKnowledge.additionalNotes ||
-          `If a player has multiple accounts or friends wanting to join together, they can drop all tags in the same ticket.`,
+          `If a player has multiple accounts or friends wanting to join together, they can share all of them in the same ticket.`,
       },
     }));
   }
@@ -118,7 +128,7 @@ export function ServerInfoClient({
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="guildName">Server / Clan Family Name</Label>
               <Input
@@ -159,6 +169,28 @@ export function ServerInfoClient({
                 </option>
                 <option value="warm_friendly">Warm & Upbeat Community Helper</option>
                 <option value="professional">Friendly & Clean Moderator</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="humanModel">AI Brain Model</Label>
+              <select
+                id="humanModel"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={
+                  KNOWN_GROQ_MODELS.some((m) => m.id === aiSettings.model)
+                    ? aiSettings.model
+                    : KNOWN_GROQ_MODELS[0]?.id ?? 'llama-3.3-70b-versatile'
+                }
+                onChange={(e) =>
+                  setAiSettings({ ...aiSettings, model: e.target.value })
+                }
+              >
+                {KNOWN_GROQ_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

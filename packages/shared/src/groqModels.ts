@@ -17,14 +17,14 @@ export interface GroqModelCapability {
  */
 export const KNOWN_GROQ_MODELS: readonly GroqModelCapability[] = [
   {
-    id: 'openai/gpt-oss-20b',
-    displayName: 'OpenAI GPT-OSS 20B',
+    id: 'llama-3.3-70b-versatile',
+    displayName: 'Meta Llama 3.3 70B Versatile (Recommended)',
     tier: 'production',
-    supportsStrictJsonSchema: true,
+    supportsStrictJsonSchema: false,
     supportsJsonObject: true,
     supportsToolUse: true,
     contextWindow: 131072,
-    notes: 'Fast LPU inference with native strict json_schema constrained decoding and tool calling.',
+    notes: 'Best natural human Discord chat voice; supports tool calling and JSON Object structured mode.',
   },
   {
     id: 'openai/gpt-oss-120b',
@@ -37,14 +37,14 @@ export const KNOWN_GROQ_MODELS: readonly GroqModelCapability[] = [
     notes: 'High-reasoning flagship open-weight model supporting strict json_schema structured outputs.',
   },
   {
-    id: 'llama-3.3-70b-versatile',
-    displayName: 'Meta Llama 3.3 70B Versatile',
+    id: 'openai/gpt-oss-20b',
+    displayName: 'OpenAI GPT-OSS 20B',
     tier: 'production',
-    supportsStrictJsonSchema: false,
+    supportsStrictJsonSchema: true,
     supportsJsonObject: true,
     supportsToolUse: true,
     contextWindow: 131072,
-    notes: 'Versatile conversational model supporting tool calling and JSON Object structured mode.',
+    notes: 'Fast lightweight LPU inference with native strict json_schema constrained decoding.',
   },
   {
     id: 'llama-3.1-8b-instant',

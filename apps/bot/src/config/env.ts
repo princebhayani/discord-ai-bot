@@ -7,7 +7,7 @@ const BotEnvSchema = z.object({
   DISCORD_CLIENT_ID: z.string().regex(/^\d{15,22}$/, 'DISCORD_CLIENT_ID must be a Discord Snowflake'),
   DISCORD_GUILD_ID: z.string().regex(/^\d{15,22}$/, 'DISCORD_GUILD_ID must be a Discord Snowflake'),
   GROQ_API_KEY: z.string().min(1, 'GROQ_API_KEY is required'),
-  GROQ_MODEL: z.string().min(1).default('openai/gpt-oss-20b'),
+  GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
   SUPABASE_URL: z
     .string()
     .url('SUPABASE_URL must be a valid https://<project-id>.supabase.co URL')

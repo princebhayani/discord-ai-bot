@@ -14,11 +14,13 @@ import { ConversationService } from './conversationService.js';
 import { InMemoryBotRepository } from './databaseRepository.js';
 import {
   GroqAiService,
+  polishHumanDiscordReply,
   type GroqCompletionClient,
   type RawGroqChatRequest,
   type RawGroqChatResult,
 } from './groqAiService.js';
 import { Logger } from './logger.js';
+import { ModeratorReportService } from './moderatorReportService.js';
 import type {
   DiscordMessenger,
   NormalizedDiscordMessage,
@@ -636,5 +638,237 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
     const finalSession = await repo.getTicketSessionByChannel(ticketChannelId);
     expect(finalSession?.playerDiscordId).toBe(PLAYER_ID);
     expect(finalSession?.status).toBe('human_handoff');
+  });
+
+  it('handles "i don\'t have" without ever re-asking for tag, collects TH backup info, and strips robotic AI tells', async () => {
+    const STAFF_CH = '898989898989898989';
+    const repo = new InMemoryBotRepository();
+    repo.setServerSettings(
+      ServerSettingsSchema.parse({
+        guildId: GUILD_ID,
+        guildName: 'Boom House',
+        botEnabled: true,
+        defaultWelcomeMessage: 'hey {user}! welcome to Boom House',
+        ticketDetectionConfig: {
+          requireProviderVerification: false,
+          mentionUserOnWelcome: true,
+        },
+        aiSettings: {
+          model: 'llama-3.3-70b-versatile',
+          personaName: 'Duke The Recruiter',
+          toneStyle: 'human_casual',
+          humanizeConversation: true,
+        },
+        playerIntegrationConfig: {
+          enabled: true,
+          quickCommandLine: '.p {tag}',
+          executionChannelMode: 'ticket_channel',
+          externalBotUserId: DATA_BOT_ID,
+        },
+        reportSettings: {
+          destinationMode: 'staff_channel',
+          staffReportChannelId: STAFF_CH,
+        },
+      })
+    );
+
+    repo.setCategoryConfigs(GUILD_ID, [
+      CategoryConfigSchema.parse({
+        guildId: GUILD_ID,
+        categoryId: CAT_ID,
+        categoryName: 'Recruitment',
+        enabled: true,
+        playerLookupEnabled: true,
+        questions: [
+          {
+            key: 'player_tag',
+            question: "What's your player tag?",
+            type: 'player_tag',
+            required: true,
+          },
+        ],
+      }),
+    ]);
+
+    const messenger = new LoopbackMessenger();
+    const fakeGroq = new FakeGroqClient();
+    const logger = new Logger('error');
+    const qm = new TicketQueueManager();
+    const configService = new ConfigService(repo, GUILD_ID, 'llama-3.3-70b-versatile', 0);
+    const sessionManager = new SessionManager(GUILD_ID, repo, configService, messenger, qm, logger);
+    const groqService = new GroqAiService(
+      fakeGroq,
+      new GlobalSemaphore(5),
+      'llama-3.3-70b-versatile',
+      logger
+    );
+    const playerAdapter = new PlayerDataBotAdapter(repo, messenger, logger);
+    const reportService = new ModeratorReportService(repo, messenger, sessionManager, qm, logger);
+    const conversationService = new ConversationService(
+      repo,
+      sessionManager,
+      groqService,
+      playerAdapter,
+      messenger,
+      qm,
+      logger,
+      configService
+    );
+
+    let deliveredPayload: Awaited<ReturnType<typeof reportService.generateAndDeliverReport>> = null;
+    conversationService.setReportCallback(async (params) => {
+      deliveredPayload = await reportService.generateAndDeliverReport(params);
+    });
+
+    const ticketChannelId = '740000000000000001';
+    await sessionManager.observeChannelOrThreadCreated({
+      exists: true,
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      name: 'ticket-prince',
+      topic: `Opened by <@${PLAYER_ID}>`,
+      categoryId: CAT_ID,
+      parentChannelId: null,
+      isThread: false,
+      isPrivateThread: false,
+      ownerId: null,
+      archived: false,
+      locked: false,
+    });
+
+    // Turn 1: Player says "hi" -> even if LLM leaked "(#...)" & double "!", polisher strips them cleanly
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: "hey! looking to join Boom House? drop your player tag (#...) so i can check your base!",
+        extractedAnswers: { player_tag: null },
+        unavailableFields: [],
+        missingFields: ['player_tag'],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: null,
+        neutralAssessment: null,
+        complete: false,
+      }),
+      promptTokens: 200,
+      completionTokens: 40,
+    }));
+
+    await conversationService.handleIncomingMessage({
+      id: 'u-turn-1',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'Prince',
+      authorBot: false,
+      content: 'hi',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const turn1BotMsg = messenger.sent[messenger.sent.length - 1]?.payload.content ?? '';
+    expect(turn1BotMsg).not.toContain('(#...)');
+
+    // Turn 2: Player says "i don't have" -> pre-turn marks player_tag [Unavailable], asks backup question, keeps session active
+    fakeGroq.queuedResponses.push((req) => {
+      const sys = req.messages[0]?.content ?? '';
+      expect(sys).toContain('[Unavailable]');
+      expect(sys).toContain('DO NOT ask for it again');
+      return {
+        content: JSON.stringify({
+          reply: 'all good, what town hall level are you and what kind of clan vibe are you looking for?',
+          extractedAnswers: { player_tag: null },
+          unavailableFields: ['player_tag'],
+          missingFields: [],
+          requestedAction: 'none',
+          lookupTarget: null,
+          issueSummary: null,
+          neutralAssessment: null,
+          complete: false,
+        }),
+        promptTokens: 240,
+        completionTokens: 45,
+      };
+    });
+
+    await conversationService.handleIncomingMessage({
+      id: 'u-turn-2',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'Prince',
+      authorBot: false,
+      content: "i don't have",
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    // Must NOT execute `.p [Unavailable]...` and must stay active for 1 backup turn
+    expect(messenger.sent.some((m) => (m.payload.content ?? '').startsWith('.p '))).toBe(false);
+    const sessionAfterTurn2 = await repo.getTicketSessionByChannel(ticketChannelId);
+    expect(sessionAfterTurn2?.status).toBe('active');
+    expect(deliveredPayload).toBeNull();
+
+    // Turn 3: Player replies "im th12 and looking for home" -> player_tag is ALREADY complete ([Unavailable]), wraps up & sends report!
+    fakeGroq.queuedResponses.push((req) => {
+      const sys = req.messages[0]?.content ?? '';
+      expect(sys).toContain('ALL REQUIRED INFO IS COMPLETE!');
+      expect(sys).toContain('NEVER mention, hint at, or ask for (player_tag) again!');
+      return {
+        content: JSON.stringify({
+          reply: "nice, th12 looking for a home works for us. We'll keep you in mind!",
+          extractedAnswers: { player_tag: null },
+          unavailableFields: [],
+          missingFields: [],
+          requestedAction: 'none',
+          lookupTarget: null,
+          issueSummary: 'TH12 player looking for a home clan; player tag unavailable.',
+          neutralAssessment: 'Self-reported TH12 recruit ready for leadership placement.',
+          complete: true,
+        }),
+        promptTokens: 280,
+        completionTokens: 55,
+      };
+    });
+
+    await conversationService.handleIncomingMessage({
+      id: 'u-turn-3',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'Prince',
+      authorBot: false,
+      content: 'im th12 and looking for home',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const turn3TicketReplies = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    const turn3BotMsg =
+      turn3TicketReplies[turn3TicketReplies.length - 1]?.payload.content ?? '';
+    expect(turn3BotMsg.toLowerCase()).not.toContain('keep you in mind');
+    expect(turn3BotMsg).toContain('leaders');
+
+    const sessionAfterTurn3 = await repo.getTicketSessionByChannel(ticketChannelId);
+    expect(sessionAfterTurn3?.status).toBe('ready_for_review');
+    expect(deliveredPayload).not.toBeNull();
+    expect(deliveredPayload?.playerInformation.playerTag).toBe('Unavailable (not provided)');
+    expect(deliveredPayload?.playerInformation.townHallLevel).toBe('12 (self-reported)');
+
+    // Direct polisher checks for hallucinated "three dots" UI & verbatim copy-paste repetition
+    const fixedThreeDots = polishHumanDiscordReply(
+      "Just open the app, tap your profile icon, and press the three dots on your profile and copy it – that's your tag!"
+    );
+    expect(fixedThreeDots.toLowerCase()).not.toContain('three dots');
+    expect(fixedThreeDots.toLowerCase()).toContain('top-left');
+
+    const antiClone = polishHumanDiscordReply(
+      'No worries, just let us know when you are online and one of our leaders will send an invite.',
+      ['No worries, just let us know when you are online and one of our leaders will send an invite.']
+    );
+    expect(antiClone.toLowerCase()).not.toContain('no worries');
+    expect(antiClone.toLowerCase()).toContain('my bad');
   });
 });

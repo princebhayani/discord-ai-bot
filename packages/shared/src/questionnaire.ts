@@ -20,6 +20,36 @@ export interface QuestionnaireProgress {
 
 const DEFAULT_PLAYER_TAG_REGEX = /^#[A-Z0-9]{3,16}$/;
 
+export const UNAVAILABLE_ANSWER_PREFIX = '[Unavailable]';
+
+const UNAVAILABLE_INTENT_REGEX =
+  /\b(?:i\s*don['’]?t\s*have|dont\s*have|do\s*not\s*have|haven['’]?t\s*got|dont\s*got|i\s*don['’]?t\s*got|i\s*have\s*no|don['’]?t\s*know|dont\s*know|idk|no\s*tag|without\s*(?:a\s*)?tag|don['’]?t\s*remember|dont\s*remember|can['’]?t\s*(?:check|open|find|get|access|log\s*in|remember|see)|cannot\s*(?:check|open|find|get|access|log\s*in|remember|see)|not\s*sure\s*(?:what|where|how)|lost\s*(?:my|access|the\s*account))\b/i;
+
+export function formatUnavailableAnswer(
+  detail = 'Opener said they do not have this right now'
+): string {
+  return `${UNAVAILABLE_ANSWER_PREFIX} ${detail}`;
+}
+
+export function isUnavailableAnswer(value: AnswerPrimitive | undefined): boolean {
+  return typeof value === 'string' && value.startsWith(UNAVAILABLE_ANSWER_PREFIX);
+}
+
+/**
+ * Detects when a player explicitly states they don't have, don't know, or can't check
+ * the requested field (e.g. "i don't have", "idk", "can't open game rn").
+ */
+export function detectUnavailableResponseIntent(rawMessage: string): boolean {
+  const trimmed = rawMessage.trim();
+  if (!trimmed || trimmed.length > 180) {
+    return false;
+  }
+  if (/#[A-Z0-9]{3,16}\b/i.test(trimmed)) {
+    return false;
+  }
+  return UNAVAILABLE_INTENT_REGEX.test(trimmed);
+}
+
 /**
  * Evaluates whether a conditional question is currently applicable based on collected answers.
  */
@@ -66,6 +96,13 @@ export function validateAnswerValue(
       valid: false,
       normalizedValue: null,
       error: question.required ? 'A response is required for this field.' : undefined,
+    };
+  }
+
+  if (isUnavailableAnswer(rawInput)) {
+    return {
+      valid: true,
+      normalizedValue: String(rawInput).trim(),
     };
   }
 
