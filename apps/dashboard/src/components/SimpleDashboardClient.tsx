@@ -271,6 +271,7 @@ export function SimpleDashboardClient({
         ticketDetectionConfig: {
           ...initialServerSettings.ticketDetectionConfig,
           mentionUserOnWelcome,
+          ignorePrivateThreads: true,
         },
         reportSettings: {
           ...initialServerSettings.reportSettings,

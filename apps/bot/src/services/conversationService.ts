@@ -39,6 +39,7 @@ export type ReportTriggerCallback = (params: {
 
 export class ConversationService {
   private onReadyForReport?: ReportTriggerCallback;
+  private readonly lastStaffMessageTimeBySession = new Map<string, number>();
 
   constructor(
     private readonly repo: BotDatabaseRepository,
@@ -81,7 +82,6 @@ export class ConversationService {
 
     if (
       activeCheck.status === 'closing' ||
-      activeCheck.status === 'human_handoff' ||
       this.queueManager.isClosingOrAborted(message.channelId)
     ) {
       return;
@@ -96,11 +96,7 @@ export class ConversationService {
       if (signal.aborted) return;
 
       let currentSession = await this.sessionManager.resolveActiveSession(message.channelId);
-      if (
-        !currentSession ||
-        currentSession.status === 'closing' ||
-        currentSession.status === 'human_handoff'
-      ) {
+      if (!currentSession || currentSession.status === 'closing') {
         return;
       }
 
@@ -221,6 +217,8 @@ export class ConversationService {
           redacted: sanitizedStaff.redacted,
         });
 
+        this.lastStaffMessageTimeBySession.set(currentSession.id, message.createdTimestamp || Date.now());
+
         const handedOff = await this.repo.updateTicketSession(currentSession.id, {
           status: 'human_handoff',
           lastProcessedMessageId: message.id,
@@ -228,7 +226,7 @@ export class ConversationService {
         if (handedOff) {
           this.sessionManager.setSessionInMemory(handedOff);
         }
-        this.logger.info('Admin/staff member replied in ticket; handed off to human staff', {
+        this.logger.info('Admin/staff member replied in ticket; recorded staff presence', {
           sessionId: currentSession.id,
           channelId: currentSession.channelId,
         });
@@ -236,13 +234,41 @@ export class ConversationService {
       }
 
       // 3. Message is confirmed from the single ticket opener!
-      // If intake is already complete & report delivered, respect post-completion follow-up setting
-      if (
-        currentSession.status === 'ready_for_review' &&
-        currentSession.reportDelivered &&
-        currentSession.configSnapshot.aiSettings.answerPostCompletionQuestions === false
-      ) {
+      // Check if staff has actively chatted recently (within 15 minutes)
+      const STAFF_ACTIVE_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+      let lastStaffTime = this.lastStaffMessageTimeBySession.get(currentSession.id);
+      if (lastStaffTime === undefined) {
+        const recentMessages = await this.repo.listTicketMessages(currentSession.id, 15);
+        const lastStaffMsg = recentMessages.slice().reverse().find((m) => m.senderType === 'staff');
+        if (lastStaffMsg) {
+          lastStaffTime = Date.parse(lastStaffMsg.createdAt);
+          this.lastStaffMessageTimeBySession.set(currentSession.id, lastStaffTime);
+        }
+      }
+
+      const staffActiveRecently =
+        lastStaffTime !== undefined &&
+        Number.isFinite(lastStaffTime) &&
+        Date.now() - lastStaffTime < STAFF_ACTIVE_COOLDOWN_MS;
+
+      if (staffActiveRecently) {
+        this.logger.info('Staff actively chatting in ticket within last 15m; bot yields to live staff', {
+          sessionId: currentSession.id,
+          channelId: currentSession.channelId,
+          lastStaffTime,
+        });
         return;
+      }
+
+      // If staff has not messaged recently (or never messaged), keep bot active and responsive!
+      if (currentSession.status === 'human_handoff') {
+        const restored = await this.repo.updateTicketSession(currentSession.id, {
+          status: 'ready_for_review',
+        });
+        if (restored) {
+          currentSession = restored;
+          this.sessionManager.setSessionInMemory(currentSession);
+        }
       }
 
       // Per-ticket rate limit protection
@@ -643,12 +669,8 @@ export class ConversationService {
       });
 
       if (isReadyForReview) {
-        const nextStatus =
-          aiOutput.turn.requestedAction === 'handoff_to_staff'
-            ? 'human_handoff'
-            : 'ready_for_review';
         const completedSession = await this.repo.updateTicketSession(currentSession.id, {
-          status: nextStatus,
+          status: 'ready_for_review',
         });
         if (completedSession) {
           currentSession = completedSession;

@@ -33,7 +33,7 @@ function mapGuildChannelToMetadata(
       parentChannelId: channel.parentId,
       parentChannelName: channel.parent?.name ?? null,
       isThread: true,
-      isPrivateThread: channel.type === ChannelType.PrivateThread,
+      isPrivateThread: (channel.type as number) === ChannelType.GuildPrivateThread,
       ownerId: channel.ownerId,
       archived: Boolean(channel.archived),
       locked: Boolean(channel.locked),
@@ -169,7 +169,10 @@ export function registerDiscordEvents(params: {
   });
 
   client.on(Events.ThreadCreate, (thread: AnyThreadChannel) => {
-    if (thread.guildId !== expectedGuildId) {
+    if (
+      thread.guildId !== expectedGuildId ||
+      (thread.type as number) === ChannelType.GuildPrivateThread
+    ) {
       return;
     }
     const meta = mapGuildChannelToMetadata(thread);
@@ -182,7 +185,11 @@ export function registerDiscordEvents(params: {
   });
 
   client.on(Events.MessageCreate, (message: Message) => {
-    if (!message.guildId || message.guildId !== expectedGuildId) {
+    if (
+      !message.guildId ||
+      message.guildId !== expectedGuildId ||
+      (message.channel.type as number) === ChannelType.GuildPrivateThread
+    ) {
       return;
     }
     const normalized = mapDiscordMessage(message);

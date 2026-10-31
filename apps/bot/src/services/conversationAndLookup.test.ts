@@ -639,6 +639,57 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
     const finalSession = await repo.getTicketSessionByChannel(ticketChannelId);
     expect(finalSession?.playerDiscordId).toBe(PLAYER_ID);
     expect(finalSession?.status).toBe('human_handoff');
+
+    // Player replies immediately (within 15m) -> bot yields to live human admin
+    await conversationService.handleIncomingMessage({
+      id: 'player-reply-immediate',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'Applicant',
+      authorBot: false,
+      authorHasModeratorPermissions: false,
+      content: 'Thanks ClanLeader!',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+    expect(messenger.sent.length).toBe(msgCountBeforeAdmin); // Bot yielded!
+
+    // When admin's last message was 5 hours ago and player asks a question -> bot steps in maturely!
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: 'Staff is currently away, but your invite request is logged and they will check back as soon as they are free!',
+        extractedAnswers: {},
+        unavailableFields: [],
+        missingFields: [],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: null,
+        neutralAssessment: null,
+        complete: true,
+      }),
+    }));
+
+    const fiveHoursAgo = Date.now() - 5 * 60 * 60 * 1000;
+    (conversationService as any).lastStaffMessageTimeBySession.set(finalSession!.id, fiveHoursAgo);
+
+    await conversationService.handleIncomingMessage({
+      id: 'player-chat-5h-later',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'Applicant',
+      authorBot: false,
+      authorHasModeratorPermissions: false,
+      content: 'Hey is anyone still around?',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    expect(messenger.sent.length).toBe(msgCountBeforeAdmin + 1);
+    expect(messenger.sent[messenger.sent.length - 1]?.payload.content).toContain('Staff is currently away');
   });
 
   it('handles "i don\'t have" without ever re-asking for tag, collects TH backup info, and strips robotic AI tells', async () => {

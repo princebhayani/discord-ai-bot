@@ -431,9 +431,30 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
       ].join('\n')
     : `Today's date (UTC): ${currentDateText}.\n${toneDirective}`;
 
+  const alreadySentCompletionNotice =
+    progress.isComplete &&
+    previousAssistantReplies.some(
+      (r) =>
+        r.toLowerCase().includes('logged your details') ||
+        r.toLowerCase().includes('connect with you here') ||
+        r.toLowerCase().includes('reach out soon') ||
+        r.toLowerCase().includes('pass this over') ||
+        r.toLowerCase().includes('noted your info') ||
+        r.toLowerCase().includes('leadership team')
+    );
+
   let intakeStateNote: string;
   if (awaitingUnavailableBackupContext) {
     intakeStateNote = `INTAKE STATUS: Opener stated they do not have (${justMarkedUnavailableKeys.join(', ')}). It is now marked [Unavailable] - DO NOT ask for it again! For this turn, say "all good" casually and ask what they're looking for or how often they're active so the team has context.`;
+  } else if (alreadySentCompletionNotice) {
+    intakeStateNote = `INTAKE STATUS: ALL INTAKE DETAILS ALREADY COMPLETED & LOGGED ON EARLIER TURNS.
+CRITICAL RULES FOR POST-INTAKE CHAT:
+- DO NOT repeat the completion message ("I have logged your details", "a staff member will reach out soon", etc.). You already told them that.
+- Chat with the member naturally, warmly, and maturely in 1-2 casual sentences.
+- Answer any questions they ask about the server, community rules, schedules, wars, or events using the Server Knowledge Base below.
+- If they ask when staff/admins will arrive or why it is taking long, reassure them casually that leadership has been notified and will check in as soon as they are free.
+- If they are just making small talk or saying "thanks", "hello", "what's up", respond friendly and conversationally like a human recruiter hanging out in the channel.
+- Keep complete=true and requestedAction="none".`;
   } else if (progress.isComplete) {
     const unavailReminder =
       unavailableKeys.length > 0
