@@ -223,8 +223,8 @@ Go to **Render -> Your Web Service -> Environment** and add these **10 rows** *(
    - Register your Discord Ticket Category ID, toggle **Enable AI in Category** **ON** -> **Publish Category Snapshot**.
 4. **Intake Questionnaire Builder (`/questions`):**
    - Click **Load Full Community Template (4 Questions)** or add custom questions -> click **Publish Questionnaire**.
-5. **Staff Reports (`/reports`):**
-   - Paste your pre-existing **Staff Report Channel ID** -> click **Publish Report & Privacy Rules**.
+5. **Staff & Permissions (`/reports`):**
+   - Add Discord Moderator / Staff User IDs so the bot automatically distinguishes staff from ticket openers inside ticket channels, and grant dashboard access to your moderation team.
 
 ---
 

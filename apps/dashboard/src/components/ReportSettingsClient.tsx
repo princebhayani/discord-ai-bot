@@ -3,17 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  FileText,
+  CheckCircle2,
   Lock,
   Plus,
   Save,
-  Send,
   Shield,
+  ShieldCheck,
   Trash2,
   UserCheck,
   Users,
 } from 'lucide-react';
-import type { ReportDestinationMode, ReportSettings } from '@hrbot/shared';
+import type { ReportSettings } from '@hrbot/shared';
 import type { DashboardAdminEntry } from '@/lib/data/dashboardDataService';
 import { useSaveStatus } from '@/hooks/useSaveStatus';
 import { StatusBanner } from '@/components/layout/StatusBanner';
@@ -28,7 +28,6 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 
 export function ReportSettingsClient({
   initialReportSettings,
@@ -59,7 +58,7 @@ export function ReportSettingsClient({
     'moderator'
   );
 
-  async function saveReportSettings() {
+  async function saveStaffIdentifiers() {
     const parsedRoles = roleIdsInput
       .split(',')
       .map((s) => s.trim())
@@ -71,6 +70,7 @@ export function ReportSettingsClient({
 
     const payload: ReportSettings = {
       ...reportSettings,
+      destinationMode: 'none',
       staffRoleIds: parsedRoles,
       staffUserIds: parsedUsers,
     };
@@ -82,10 +82,10 @@ export function ReportSettingsClient({
         body: JSON.stringify({ reportSettings: payload }),
       });
       const json = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(json.error ?? 'Failed saving report settings');
+      if (!res.ok) throw new Error(json.error ?? 'Failed saving staff settings');
       setReportSettings(payload);
       router.refresh();
-      return 'Published Moderator Report & Privacy configuration.';
+      return 'Saved staff & moderator Discord IDs.';
     });
   }
 
@@ -131,176 +131,76 @@ export function ReportSettingsClient({
     <div className="space-y-6">
       <StatusBanner status={status} />
 
-      {/* Report Destinations */}
+      {/* Staff & Moderator Identification (For in-ticket distinction) */}
       <Card className="glass-card border border-border/60">
         <CardHeader className="pb-4 border-b border-border/40">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
               <CardTitle className="flex items-center gap-2 text-base font-semibold">
-                <Send className="h-4 w-4 text-primary" />
-                Pre-Existing Report Delivery Destinations
+                <ShieldCheck className="h-4 w-4 text-primary" />
+                Staff &amp; Moderator Discord Identification
               </CardTitle>
               <CardDescription className="text-xs">
-                The bot delivers intake summaries into pre-existing Discord destinations. It never creates channels, archives threads, or changes permissions.
+                Helps the assistant accurately distinguish staff/administrators from the single ticket opener. When staff chat inside tickets, the bot automatically yields and will never confuse staff for the applicant.
               </CardDescription>
             </div>
             <Badge variant="outline" className="font-mono text-xs border-primary/30 text-primary">
-              Staff Confidential
+              Ticket Protection
             </Badge>
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-5 pt-4">
+        <CardContent className="space-y-4 pt-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Delivery Destination Mode</Label>
-              <select
-                className="h-9 w-full rounded-md border border-border/60 bg-muted/30 px-3 text-xs focus:border-primary focus:outline-none"
-                value={reportSettings.destinationMode}
-                onChange={(e) =>
-                  setReportSettings({
-                    ...reportSettings,
-                    destinationMode: e.target.value as ReportDestinationMode,
-                  })
-                }
-              >
-                <option value="staff_channel" className="bg-background text-foreground">
-                  Pre-Existing Staff-Only Report Channel
-                </option>
-                <option value="existing_private_thread" className="bg-background text-foreground">
-                  Existing Private Ticket Thread (Ticket Bot Managed)
-                </option>
-                <option value="both" className="bg-background text-foreground">Both Destinations</option>
-              </select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Staff Report Channel Snowflake ID</Label>
-              <Input
-                className="bg-muted/30 border-border/60 font-mono text-xs"
-                placeholder="17-20 digit Discord Snowflake ID"
-                value={reportSettings.staffReportChannelId}
-                onChange={(e) =>
-                  setReportSettings({
-                    ...reportSettings,
-                    staffReportChannelId: e.target.value,
-                  })
-                }
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Staff Role IDs to Ping (comma-separated)</Label>
-              <Input
-                className="bg-muted/30 border-border/60 font-mono text-xs"
-                placeholder="e.g. 111111111111111111, 222222222222222222"
-                value={roleIdsInput}
-                onChange={(e) => setRoleIdsInput(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Staff User IDs for Handoff Detection (comma-separated)</Label>
+              <Label className="text-xs text-muted-foreground">Staff Discord User IDs (comma-separated)</Label>
               <Input
                 className="bg-muted/30 border-border/60 font-mono text-xs"
                 placeholder="e.g. 333333333333333333, 444444444444444444"
                 value={userIdsInput}
                 onChange={(e) => setUserIdsInput(e.target.value)}
               />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 p-3">
-              <div>
-                <p className="text-xs font-medium text-foreground">
-                  Allow Private Thread Destination
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  Omits confidential notes if applicant is in thread
-                </p>
-              </div>
-              <Switch
-                checked={reportSettings.allowVerifiedPrivateThreadDestination}
-                onCheckedChange={(checked) =>
-                  setReportSettings({
-                    ...reportSettings,
-                    allowVerifiedPrivateThreadDestination: checked,
-                  })
-                }
-              />
+              <p className="text-[10px] text-muted-foreground">
+                Messages from these user IDs are recognized as staff activity.
+              </p>
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 p-3">
-              <div>
-                <p className="text-xs font-medium text-foreground">
-                  Post Applicant Summary in Ticket
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  Confirms submitted answers to the member in chat
-                </p>
-              </div>
-              <Switch
-                checked={reportSettings.includePlayerSummaryInTicket}
-                onCheckedChange={(checked) =>
-                  setReportSettings({
-                    ...reportSettings,
-                    includePlayerSummaryInTicket: checked,
-                  })
-                }
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Staff Role IDs (comma-separated)</Label>
+              <Input
+                className="bg-muted/30 border-border/60 font-mono text-xs"
+                placeholder="e.g. 111111111111111111, 222222222222222222"
+                value={roleIdsInput}
+                onChange={(e) => setRoleIdsInput(e.target.value)}
               />
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-              <Label className="text-xs text-muted-foreground cursor-pointer">Structured Answers</Label>
-              <Switch
-                checked={reportSettings.includeRawAnswers}
-                onCheckedChange={(checked) =>
-                  setReportSettings({ ...reportSettings, includeRawAnswers: checked })
-                }
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-              <Label className="text-xs text-muted-foreground cursor-pointer">Privacy Redaction</Label>
-              <Switch
-                checked={reportSettings.privacyRedactionEnabled}
-                onCheckedChange={(checked) =>
-                  setReportSettings({
-                    ...reportSettings,
-                    privacyRedactionEnabled: checked,
-                  })
-                }
-              />
+              <p className="text-[10px] text-muted-foreground">
+                Members holding these Discord roles are treated as moderators.
+              </p>
             </div>
           </div>
 
           <div className="flex justify-end pt-2">
             <Button
               type="button"
-              onClick={saveReportSettings}
+              onClick={saveStaffIdentifiers}
               className="shadow-sm shadow-primary/20 hover:shadow-primary/40 text-xs"
             >
               <Save className="mr-2 h-4 w-4" />
-              Publish Report &amp; Privacy Rules
+              Save Staff Identifiers
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Dashboard Moderator Allowlist */}
+      {/* Dashboard Moderator & Admin Allowlist */}
       <Card className="glass-card border border-border/60">
         <CardHeader className="pb-4 border-b border-border/40">
           <CardTitle className="flex items-center gap-2 text-base font-semibold">
             <Users className="h-4 w-4 text-primary" />
-            Dashboard Staff Allowlist
+            Dashboard Staff Allowlist &amp; Permissions
           </CardTitle>
           <CardDescription className="text-xs">
-            Manage which Discord users or roles have access to view and edit this configuration dashboard.
+            Manage which Discord users or roles have access to view and configure this dashboard.
           </CardDescription>
         </CardHeader>
 
@@ -331,7 +231,7 @@ export function ReportSettingsClient({
                 <Label className="text-[11px] text-muted-foreground">Label / Note</Label>
                 <Input
                   className="bg-background border-border/60 text-xs"
-                  placeholder="e.g. Head Moderator"
+                  placeholder="e.g. Lead Moderator"
                   value={adminLabel}
                   onChange={(e) => setAdminLabel(e.target.value)}
                 />
@@ -339,15 +239,15 @@ export function ReportSettingsClient({
 
               <div className="flex items-end gap-2">
                 <select
-                  className="h-9 w-full rounded-md border border-border/60 bg-background px-2 text-xs"
+                  className="h-9 w-full rounded-md border border-border/60 bg-background px-2 text-xs focus:border-primary focus:outline-none"
                   value={adminLevel}
                   onChange={(e) =>
                     setAdminLevel(e.target.value as 'owner' | 'admin' | 'moderator')
                   }
                 >
-                  <option value="moderator">Moderator</option>
-                  <option value="admin">Admin</option>
-                  <option value="owner">Owner</option>
+                  <option value="moderator" className="bg-background text-foreground">Moderator</option>
+                  <option value="admin" className="bg-background text-foreground">Admin</option>
+                  <option value="owner" className="bg-background text-foreground">Owner</option>
                 </select>
 
                 <Button
@@ -368,7 +268,7 @@ export function ReportSettingsClient({
           <div className="space-y-2">
             {admins.length === 0 ? (
               <p className="text-xs text-muted-foreground/70 italic text-center py-4">
-                No custom allowlist entries configured. Server owner has full access.
+                No custom allowlist entries configured. Server owner has full access by default.
               </p>
             ) : (
               admins.map((adm) => (
@@ -382,8 +282,8 @@ export function ReportSettingsClient({
                       <p className="text-xs font-semibold text-foreground">{adm.label}</p>
                       <p className="font-mono text-[10px] text-muted-foreground">
                         {adm.discordUserId
-                          ? `User: ${adm.discordUserId}`
-                          : `Role: ${adm.discordRoleId}`}
+                          ? `User ID: ${adm.discordUserId}`
+                          : `Role ID: ${adm.discordRoleId}`}
                       </p>
                     </div>
                   </div>

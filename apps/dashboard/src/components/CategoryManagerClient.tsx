@@ -398,18 +398,6 @@ export function CategoryManagerClient({
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Report Channel Override ID (Optional)</Label>
-                  <Input
-                    className="bg-muted/30 border-border/60 font-mono text-xs"
-                    placeholder="Optional staff channel Snowflake ID for transcripts from this category"
-                    value={selectedCategory.reportChannelOverrideId ?? ''}
-                    onChange={(e) =>
-                      updateSelected({ reportChannelOverrideId: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">
                     Category Welcome Message Override (Optional)
                   </Label>

@@ -197,6 +197,13 @@ export class ModeratorReportService {
       return null;
     }
 
+    if (reportSettings.destinationMode === 'none') {
+      this.logger.debug('Report delivery to staff disabled by configuration (destinationMode is none)', {
+        sessionId: session.id,
+      });
+      return payload;
+    }
+
     // 1. Confidential Staff Channel Destination (NEVER create channels; NEVER post confidential report in player-visible ticket channel)
     const shouldSendToStaffChannel =
       reportSettings.destinationMode === 'staff_channel' ||

@@ -21,11 +21,10 @@ export default async function ReportsPage() {
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">
-          Report Destinations, Privacy & Moderator Allowlist
+          Staff Identifiers &amp; Dashboard Allowlist
         </h1>
         <p className="text-sm text-muted-foreground">
-          Configure pre-existing staff report destinations, confidentiality safeguards, and
-          dashboard administrator permissions.
+          Configure staff Discord IDs for ticket opener distinction and grant dashboard permissions to your moderation team.
         </p>
       </div>
 
@@ -37,4 +36,3 @@ export default async function ReportsPage() {
     </div>
   );
 }
-

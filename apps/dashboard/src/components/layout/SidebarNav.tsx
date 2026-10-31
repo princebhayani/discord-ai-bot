@@ -14,6 +14,7 @@ import {
   LogOut,
   ShieldCheck,
   Sparkles,
+  Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -41,13 +42,13 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'INTAKE PIPELINE',
     items: [
       { href: '/questions', label: 'Question Builder', icon: ListChecks },
-      { href: '/reports', label: 'Staff Transcripts', icon: FileText },
     ],
   },
   {
     title: 'ENGINE & GUARDS',
     items: [
       { href: '/ai-settings', label: 'AI & Detection', icon: Bot },
+      { href: '/reports', label: 'Staff & Admins', icon: Users },
     ],
   },
 ];

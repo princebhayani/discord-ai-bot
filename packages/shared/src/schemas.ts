@@ -203,6 +203,7 @@ export const PlayerIntegrationConfigSchema = z.object({
 export type PlayerIntegrationConfig = z.infer<typeof PlayerIntegrationConfigSchema>;
 
 export const ReportDestinationModeSchema = z.enum([
+  'none',
   'staff_channel',
   'existing_private_thread',
   'both',
@@ -210,7 +211,7 @@ export const ReportDestinationModeSchema = z.enum([
 export type ReportDestinationMode = z.infer<typeof ReportDestinationModeSchema>;
 
 export const ReportSettingsSchema = z.object({
-  destinationMode: ReportDestinationModeSchema.default('staff_channel'),
+  destinationMode: ReportDestinationModeSchema.default('none'),
   staffReportChannelId: OptionalSnowflakeSchema.default(''),
   allowVerifiedPrivateThreadDestination: z.boolean().default(false),
   includePlayerSummaryInTicket: z.boolean().default(false),
