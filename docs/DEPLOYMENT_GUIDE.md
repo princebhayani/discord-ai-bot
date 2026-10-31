@@ -212,19 +212,14 @@ Go to **Render -> Your Web Service -> Environment** and add these **10 rows** *(
 
 ---
 
-## Step 9: Configure Server Details, Intake Questionnaire & Categories in Dashboard
+## Step 9: Configure Server Details & Questions in Dashboard
 
-1. Log in at `https://your-dashboard.vercel.app/login` and verify **Bot Worker Online** is green on **Overview**.
-2. **Server Info & Persona (`/server-info`):**
-   - Set your **Server / Community Name** (e.g. `Boom House`) and **Bot Persona Name** (e.g. `Duke The Recruiter`).
-   - Keep **Tag Opener on 1st Message**, **Ignore Private Threads**, and **Humanize Replies** **ON**.
-   - Fill in your community knowledge boxes (or click **Load Community Preset**) -> click **Save Server & Persona**.
-3. **Category Management (`/categories`):**
-   - Register your Discord Ticket Category ID, toggle **Enable AI in Category** **ON** -> **Publish Category Snapshot**.
-4. **Intake Questionnaire Builder (`/questions`):**
-   - Click **Load Full Community Template (4 Questions)** or add custom questions -> click **Publish Questionnaire**.
-5. **Staff & Permissions (`/reports`):**
-   - Add Discord Moderator / Staff User IDs so the bot automatically distinguishes staff from ticket openers inside ticket channels, and grant dashboard access to your moderation team.
+1. Log in at `https://your-dashboard.vercel.app/login` and verify **Bot Online** is green.
+2. On the unified **Server & Questions** dashboard:
+   - **1. Server Details & Bot Persona**: Set your Community Name (e.g. `Boom House`), Bot Persona Name (e.g. `Duke The Recruiter`), Welcome Message, and community knowledge/rules.
+   - **2. Intake Questions**: Click quick-add buttons or customize the questions your bot asks ticket openers (short text, paragraph, multiple choice, etc.).
+   - **3. Ticket Category & Staff**: Paste your Discord Ticket Category ID and Staff User IDs so the bot never confuses staff for applicants.
+3. Click **Save & Publish All**!
 
 ---
 
