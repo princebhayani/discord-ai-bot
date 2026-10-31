@@ -1119,5 +1119,179 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
     expect(replies2[2]?.payload.content).toContain('daily is perfect');
     const updatedSession = await repo.getTicketSessionByChannel(ticketChannelId);
     expect(updatedSession?.status).toBe('ready_for_review');
+
+    // Turn 3: User asks "where is admins ?" during post-intake waiting phase
+    fakeGroq.queuedResponses.push((req) => {
+      const sys = req.messages[0]?.content ?? '';
+      expect(sys).toContain('ALL INTAKE QUESTIONS ARE ALREADY COMPLETED & LOGGED ON EARLIER TURNS.');
+      expect(sys).toContain('Leadership, admins, and moderators review tickets and chat DIRECTLY INSIDE THIS TICKET CHANNEL.');
+      expect(sys).toContain('ABSOLUTE PROHIBITION ON CHANNEL HALLUCINATIONS: NEVER tell applicants to go to another channel');
+      expect(sys).toContain('STRICT BAN ON ROBOTIC REPETITIONS');
+      return {
+        content: JSON.stringify({
+          reply: "I'm right here! Leadership checks tickets regularly, so one of them will jump in to chat with you soon.",
+          extractedAnswers: {},
+          unavailableFields: [],
+          missingFields: [],
+          requestedAction: 'none',
+          lookupTarget: null,
+          issueSummary: null,
+          neutralAssessment: null,
+          complete: true,
+        }),
+        promptTokens: 260,
+        completionTokens: 35,
+      };
+    });
+
+    await conversationService.handleIncomingMessage({
+      id: 'prince-msg-3',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'PRINCE',
+      authorBot: false,
+      content: 'where is admins ?',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const replies3 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies3[3]?.payload.content).toContain('jump in to chat with you soon');
+    expect(replies3[3]?.payload.content).not.toContain('#admins');
+
+    // Turn 4: User asks "how do i join clan?" and model attempts hallucination of external clan tags
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: "You'll need to get a tag from one of our clans, then a staff member will add you.",
+        extractedAnswers: {},
+        unavailableFields: [],
+        missingFields: [],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: null,
+        neutralAssessment: null,
+        complete: true,
+      }),
+      promptTokens: 270,
+      completionTokens: 35,
+    }));
+
+    await conversationService.handleIncomingMessage({
+      id: 'prince-msg-4',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'PRINCE',
+      authorBot: false,
+      content: 'how do i join clan?',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const replies4 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies4[4]?.payload.content).toContain('leadership will review your details right here');
+    expect(replies4[4]?.payload.content).not.toContain('get a tag from one of our clans');
+
+    // Turn 5: User says "okay" - verify bot does NOT emit canned robotic "thanks for the info!"
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: "Sounds good! Just holler if you've got any questions while we wait for leadership.",
+        extractedAnswers: {},
+        unavailableFields: [],
+        missingFields: [],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: null,
+        neutralAssessment: null,
+        complete: true,
+      }),
+      promptTokens: 280,
+      completionTokens: 25,
+    }));
+
+    await conversationService.handleIncomingMessage({
+      id: 'prince-msg-5',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'PRINCE',
+      authorBot: false,
+      content: 'okay',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const replies5 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies5[5]?.payload.content).toContain('Sounds good');
+    expect(replies5[5]?.payload.content).not.toContain('thanks for the info');
+    expect(replies5[5]?.payload.content).not.toContain('thanks for sharing');
+
+    // Turn 6: User says "anyone is here ?" and model tries hallucinating "#admins" channel
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: "The admins are in the #admins channel. Just hop over there and drop a message if you need anything.",
+        extractedAnswers: {},
+        unavailableFields: [],
+        missingFields: [],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: null,
+        neutralAssessment: null,
+        complete: true,
+      }),
+      promptTokens: 290,
+      completionTokens: 30,
+    }));
+
+    await conversationService.handleIncomingMessage({
+      id: 'prince-msg-6',
+      channelId: ticketChannelId,
+      guildId: GUILD_ID,
+      authorId: PLAYER_ID,
+      authorUsername: 'PRINCE',
+      authorBot: false,
+      content: 'anyone is here ?',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
+    });
+
+    const replies6 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies6[6]?.payload.content).toContain('leadership reviews tickets directly in this channel');
+    expect(replies6[6]?.payload.content).not.toContain('#admins');
+  });
+
+  it('anti-robot polisher strips #admins hallucination, clan tag hallucinations, and repetitive canned thanks', () => {
+    // 1. Catches #admins hallucination
+    const adminHallucination = polishHumanDiscordReply(
+      'The admins are in the #admins channel. Just hop over there and drop a message if you need anything.'
+    );
+    expect(adminHallucination).toContain('leadership reviews tickets directly in this channel');
+    expect(adminHallucination).not.toContain('#admins');
+
+    // 2. Catches "get a tag from one of our clans"
+    const clanTagHallucination = polishHumanDiscordReply(
+      "You'll need to get a tag from one of our clans, then a staff member will add you."
+    );
+    expect(clanTagHallucination).toContain('leadership will review your details right here');
+    expect(clanTagHallucination).not.toContain('get a tag from one of our clans');
+
+    // 3. Catches repeated "All good, thanks for the info!"
+    const repeatedThanks = polishHumanDiscordReply(
+      'All good, thanks for the info!',
+      ['All good, thanks for the info!']
+    );
+    expect(repeatedThanks).not.toContain('thanks for the info');
+
+    // 4. Catches repeated "All good, thanks for sharing!"
+    const repeatedSharing = polishHumanDiscordReply(
+      'All good, thanks for sharing!',
+      ['Nice, thanks for sharing!']
+    );
+    expect(repeatedSharing).not.toContain('thanks for sharing');
   });
 });

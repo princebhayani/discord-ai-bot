@@ -430,6 +430,24 @@ export class ConversationService {
         initialProgress.missingRequiredQuestions.length === 0 &&
         !this.hasSubstantivePlayerContext(playerMessageContents);
 
+      const isPostIntakePhase =
+        initialProgress.isComplete &&
+        (currentSession.status === 'ready_for_review' ||
+          currentSession.reportDelivered ||
+          assistantMessages.some(
+            (r) =>
+              r.content.toLowerCase().includes('logged your details') ||
+              r.content.toLowerCase().includes('connect with you here') ||
+              r.content.toLowerCase().includes('reach out soon') ||
+              r.content.toLowerCase().includes('pass this over') ||
+              r.content.toLowerCase().includes('noted your info') ||
+              r.content.toLowerCase().includes('leadership team') ||
+              r.content.toLowerCase().includes('moderators who will') ||
+              r.content.toLowerCase().includes('one of them will') ||
+              r.content.toLowerCase().includes('all good, thanks') ||
+              r.content.toLowerCase().includes('thanks for sharing')
+          ));
+
       let aiOutput;
       try {
         aiOutput = await this.groqService.generateTurn({
@@ -442,6 +460,7 @@ export class ConversationService {
           recentSecretRedacted: sanitized.redacted,
           justMarkedUnavailableKeys,
           awaitingUnavailableBackupContext,
+          isPostIntakePhase,
           signal,
         });
 

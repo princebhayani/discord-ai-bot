@@ -25,6 +25,7 @@ export interface AiTurnInput {
   recentSecretRedacted: boolean;
   justMarkedUnavailableKeys?: string[];
   awaitingUnavailableBackupContext?: boolean;
+  isPostIntakePhase?: boolean;
   signal?: AbortSignal;
 }
 
@@ -218,7 +219,8 @@ function normalizeSentenceForComparison(sentence: string): string {
 
 /**
  * Deterministic post-processor that strips dead-giveaway LLM artifacts, placeholder symbols,
- * hallucinated Clash UI instructions, repetitive "No worries" openers, and verbatim sentence clones.
+ * hallucinated Clash UI instructions, hallucinated staff channels (#admins), repetitive canned
+ * acknowledgments ("thanks for the info", "thanks for sharing"), and verbatim sentence clones.
  */
 export function polishHumanDiscordReply(
   rawReply: string,
@@ -240,7 +242,17 @@ export function polishHumanDiscordReply(
     return "in clash, tap your xp level in the top-left corner to open your profile - your # tag is right under your name with a small share/copy icon next to it. all good if you can't grab it right now though.";
   }
 
-  // 4. Rewrite dead-giveaway corporate brush-offs
+  // 4. Catch hallucinated staff channel directs (e.g. "admins are in the #admins channel", "hop over to #admins")
+  if (/(?:#admins|admins\s+channel|hop\s+over\s+there|drop\s+a\s+message\s+if\s+you\s+need)/i.test(text)) {
+    return "leadership reviews tickets directly in this channel, so one of them will drop in here soon.";
+  }
+
+  // 5. Catch hallucinated "get a tag from one of our clans"
+  if (/\b(?:get a tag from one of our clans|find a tag from our clans)\b/i.test(text)) {
+    return "leadership will review your details right here in this ticket and get you set up with the right clan once they hop in.";
+  }
+
+  // 6. Rewrite dead-giveaway corporate brush-offs
   text = text
     .replace(
       /\bwe['’]?ll keep you in mind(?:[^.!?]*)[.!?]?/gi,
@@ -251,14 +263,35 @@ export function polishHumanDiscordReply(
       "i've passed your info over to the leaders - one of them will check in here soon."
     );
 
-  // 5. Anti-verbatim-clone guard: drop sentences (>=28 normalized chars) copied from recent bot turns
+  // 7. Anti-duplicate whole reply check: if the entire generated reply is identical or nearly identical to a recent bot reply
+  const currentNormalized = normalizeSentenceForComparison(text);
+  const recentNorms = previousAssistantReplies.slice(-3).map(normalizeSentenceForComparison);
+  if (recentNorms.includes(currentNormalized) && currentNormalized.length > 0) {
+    return "my bad for repeating myself - leadership has your details and one of them will jump in here soon. let me know if you need anything while waiting.";
+  }
+
+  // 8. Prevent repeating "thanks for the info" / "thanks for sharing" across turns
+  const recentUsedThanks = previousAssistantReplies
+    .slice(-3)
+    .some((r) => /\bthanks\s+for\s+(?:the\s+info|sharing|the\s+heads-?up|letting\s+me\s+know)\b/i.test(r));
+
+  if (recentUsedThanks && /\bthanks\s+for\s+(?:the\s+info|sharing|the\s+heads-?up|letting\s+me\s+know)[!,.:\s-]*/i.test(text)) {
+    text = text
+      .replace(/\b(?:nice,?\s*)?thanks\s+for\s+(?:the\s+info|sharing|the\s+heads-?up|letting\s+me\s+know)[!,.:\s-]*/gi, '')
+      .trim();
+    if (!text || text.length < 5) {
+      return "sounds good! let me know if you have any questions while waiting.";
+    }
+  }
+
+  // 9. Anti-verbatim-clone guard: drop sentences (>=10 normalized chars) copied from recent bot turns
   if (previousAssistantReplies.length > 0) {
     const prevNorms: string[] = [];
-    for (const prev of previousAssistantReplies.slice(-2)) {
+    for (const prev of previousAssistantReplies.slice(-3)) {
       const prevSentences = prev.match(/[^.!?]+[.!?]*/g) ?? [prev];
       for (const ps of prevSentences) {
         const norm = normalizeSentenceForComparison(ps);
-        if (norm.length >= 28) {
+        if (norm.length >= 10) {
           prevNorms.push(norm);
         }
       }
@@ -268,20 +301,20 @@ export function polishHumanDiscordReply(
       const currentSentences = text.match(/[^.!?]+[.!?]*/g) ?? [text];
       const kept = currentSentences.filter((cs) => {
         const norm = normalizeSentenceForComparison(cs);
-        if (norm.length < 28) return true;
+        if (norm.length < 10) return true;
         return !prevNorms.some(
-          (pn) => norm === pn || norm.includes(pn) || pn.includes(norm)
+          (pn) => norm === pn || (norm.length >= 15 && (norm.includes(pn) || pn.includes(norm)))
         );
       });
 
       if (kept.length === 0) {
-        return "haha my bad for repeating myself - i've got your notes down for the leaders so one of them will jump in here directly.";
+        return "my bad for repeating myself - leadership has your details and one of them will jump in here soon. let me know if you need anything while waiting.";
       }
       text = kept.join(' ').trim();
     }
   }
 
-  // 6. Prevent repeating "No worries" if already used in recent replies
+  // 10. Prevent repeating "No worries" if already used in recent replies
   const recentUsedNoWorries = previousAssistantReplies
     .slice(-3)
     .some((r) => /^\s*no\s+worries\b/i.test(r));
@@ -296,7 +329,22 @@ export function polishHumanDiscordReply(
     }
   }
 
-  // 7. Cap exclamation-mark spam (at most 1 "!" per message)
+  // 11. Prevent repeating "All good" opener if already used in last reply
+  const lastReply = previousAssistantReplies[previousAssistantReplies.length - 1] ?? '';
+  if (/^\s*all\s+good\b/i.test(lastReply) && /^\s*all\s+good[!,.:\s-]*/i.test(text)) {
+    const remainder = text.replace(/^\s*all\s+good[!,.:\s-]*/i, '').trim();
+    if (remainder.length > 0) {
+      const loweredStart =
+        /^(?:I\b|TH\d|CWL\b)/.test(remainder)
+          ? remainder
+          : `${remainder.charAt(0).toLowerCase()}${remainder.slice(1)}`;
+      text = `sounds good, ${loweredStart}`;
+    } else {
+      text = "sounds good! feel free to ask if you need anything while waiting.";
+    }
+  }
+
+  // 12. Cap exclamation-mark spam (at most 1 "!" per message)
   let seenExclamation = false;
   text = text.replace(/!+/g, () => {
     if (!seenExclamation) {
@@ -375,19 +423,22 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
   const previousAssistantReplies = conversationHistory
     .filter((m) => m.senderType === 'assistant')
     .map((m) => m.content)
-    .slice(-3);
+    .slice(-5);
 
   const knowledge = ai.serverKnowledge;
+  const defaultServerOverview = `## About ${snapshot.guildName}\n${snapshot.guildName} is an active Discord and gaming community. Tickets are used for applicant intake, recruitment, and player support.`;
+  const defaultJoiningProcess = `## How Joining Works & Expected Leader Response Time\nAdmins and leadership review applications and finalize clan placements directly inside this ticket channel. Once staff is available, they will review your answers and provide clan invites or next steps right here. Response times vary depending on active hours, but tickets are checked regularly.`;
+
   const knowledgeBlocks = [
     knowledge?.serverOverview?.trim()
       ? `## About ${snapshot.guildName}\n${knowledge.serverOverview.trim()}`
-      : '',
+      : defaultServerOverview,
     knowledge?.clanRequirementsAndRules?.trim()
       ? `## Clans, Requirements & Rules\n${knowledge.clanRequirementsAndRules.trim()}`
       : '',
     knowledge?.joiningProcessAndTiming?.trim()
       ? `## How Joining Works & Expected Leader Response Time\n${knowledge.joiningProcessAndTiming.trim()}`
-      : '',
+      : defaultJoiningProcess,
     knowledge?.additionalNotes?.trim()
       ? `## Extra Server Details\n${knowledge.additionalNotes.trim()}`
       : '',
@@ -416,6 +467,15 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
         `  * NEVER say "We'll keep you in mind", "we'll get you set up", "whenever you're ready", "whenever you have it", or "when you can".`,
         `  * NEVER repeat "No worries" across turns - vary your openers ("all good", "fair enough", "nice", "sweet", or jump straight into your reply with no filler).`,
         `  * NEVER say "Could you please provide", "How can I help you today?", "Thank you for your patience", or "A staff member will review your request shortly."`,
+        `  * NEVER repeat canned acknowledgments like "All good, thanks for sharing!", "All good, thanks for the info!", or "Thanks for the heads-up!" over and over.`,
+        ``,
+        `# Ticket Operating Environment & Staff Direct Review (CRITICAL)`,
+        `- This conversation takes place inside a dedicated private ticket channel.`,
+        `- Leadership, admins, and moderators review tickets and chat DIRECTLY INSIDE THIS TICKET CHANNEL.`,
+        `- ABSOLUTE PROHIBITION ON CHANNEL HALLUCINATIONS: NEVER tell applicants to go to another channel (such as "#admins", "#support", "#general", "hop over to another channel", or "DM staff"). Applicants do not have access to staff channels!`,
+        `- Clan Joining Process: Clan placement and invitations are handled by leadership directly right here in this ticket. Applicants do NOT need to fetch external clan tags or perform steps elsewhere.`,
+        `- Inquiring about Staff / Waiting / "anyone here?": Reassure the applicant warmly that leadership / staff has their notes and will drop into this ticket channel to finalize everything as soon as someone is free.`,
+        `- Ban on Repetitive Parrot Phrases: When the applicant sends short fillers ("yeah", "okay", "cool"), reply casually like a real person hanging out, not a robot logging data.`,
         ``,
         `# Conversational Intake & Scope Guidelines`,
         `- Primary Purpose: Welcome the member, gather the community intake questions configured in the Active Questionnaire (e.g. what they are looking forward to, how active they are, their goals/vibe), and answer any general questions about ${snapshot.guildName} using the Knowledge Base.`,
@@ -426,34 +486,47 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
         `- Bare greeting ("hi", "hey", "yo"): Greet them back warmly and casually, and ask what brings them in or ask the next pending question from the questionnaire.`,
         `- Opener says they DON'T have or can't check something ("i don't have", "idk", "not sure"): Accept it immediately with zero pressure! Never re-ask an unavailable field.`,
         `- Opener says "wait", "sure", "ok", "one sec": Just say "take your time" or "go for it".`,
+        `- Opener asks where staff is ("where is admins?", "anyone here?", "hello?", "when will someone come?"): Reassure them that staff has been alerted and will connect with them right here in this ticket as soon as someone is free.`,
+        `- Opener asks how to join clan ("how do i join?", "what clan?"): Tell them leadership will review their info and provide the clan invite right here in this ticket.`,
+        `- Opener sends short acknowledgment ("yeah", "okay", "alright", "cool", "bet"): DO NOT thank them for info! Reply casually in 1 brief sentence (e.g. "Sounds good! Just let me know if you have any questions while you wait.").`,
         `- Banter / corrections / "are you an AI?": Be chill, self-aware, and honest in one relaxed sentence (e.g. laugh it off, mention you're the server's ticket helper grabbing quick intake details for the team, and let them know a human moderator will hop in shortly).`,
         `- Awareness: Today is ${currentDateText}.`,
       ].join('\n')
     : `Today's date (UTC): ${currentDateText}.\n${toneDirective}`;
 
-  const alreadySentCompletionNotice =
-    progress.isComplete &&
-    previousAssistantReplies.some(
-      (r) =>
-        r.toLowerCase().includes('logged your details') ||
-        r.toLowerCase().includes('connect with you here') ||
-        r.toLowerCase().includes('reach out soon') ||
-        r.toLowerCase().includes('pass this over') ||
-        r.toLowerCase().includes('noted your info') ||
-        r.toLowerCase().includes('leadership team')
-    );
+  const isPostIntakePhase =
+    input.isPostIntakePhase ||
+    (progress.isComplete &&
+      previousAssistantReplies.length > 0 &&
+      previousAssistantReplies.some(
+        (r) =>
+          r.toLowerCase().includes('logged your details') ||
+          r.toLowerCase().includes('connect with you here') ||
+          r.toLowerCase().includes('reach out soon') ||
+          r.toLowerCase().includes('pass this over') ||
+          r.toLowerCase().includes('noted your info') ||
+          r.toLowerCase().includes('leadership team') ||
+          r.toLowerCase().includes('moderators who will') ||
+          r.toLowerCase().includes('one of them will') ||
+          r.toLowerCase().includes('all good, thanks') ||
+          r.toLowerCase().includes('thanks for sharing')
+      ));
 
   let intakeStateNote: string;
   if (awaitingUnavailableBackupContext) {
     intakeStateNote = `INTAKE STATUS: Opener stated they do not have (${justMarkedUnavailableKeys.join(', ')}). It is now marked [Unavailable] - DO NOT ask for it again! For this turn, say "all good" casually and ask what they're looking for or how often they're active so the team has context.`;
-  } else if (alreadySentCompletionNotice) {
-    intakeStateNote = `INTAKE STATUS: ALL INTAKE DETAILS ALREADY COMPLETED & LOGGED ON EARLIER TURNS.
-CRITICAL RULES FOR POST-INTAKE CHAT:
-- DO NOT repeat the completion message ("I have logged your details", "a staff member will reach out soon", etc.). You already told them that.
+  } else if (isPostIntakePhase) {
+    intakeStateNote = `INTAKE STATUS: ALL INTAKE QUESTIONS ARE ALREADY COMPLETED & LOGGED ON EARLIER TURNS.
+CURRENT PHASE: TICKET HOST & CONVERSATIONAL Q&A (WAITING FOR LEADERSHIP REVIEW).
+CRITICAL RULES FOR THIS TURN:
+- DO NOT ask any questionnaire questions.
+- DO NOT repeat completion notices ("I have logged your details", "a staff member will reach out soon"). You already told them that.
+- STRICT BAN ON ROBOTIC REPETITIONS:
+  * NEVER say "All good, thanks for the info!", "Thanks for sharing!", "All good, thanks for sharing!", "Nice, thanks for the info!", or "Thanks for the heads-up!" repeatedly.
+  * When the member says "yeah", "okay", "alright", "cool", "sure": DO NOT treat it as new information to thank them for! Respond casually in 1 brief sentence (e.g. "Sounds good! Just let me know if you have any questions about the server or clans while we wait for leadership.").
+  * When the member asks "where is admins?", "anyone is here?", "hello?", "when will they check?": Reassure them directly that staff has been notified and one of them will jump right into this ticket channel to chat with them as soon as someone is free.
+  * When the member asks how to join the clan or what's next: Explain that leadership will review their answers right here in this ticket and get them set up with the right clan once they hop in.
 - Chat with the member naturally, warmly, and maturely in 1-2 casual sentences.
-- Answer any questions they ask about the server, community rules, schedules, wars, or events using the Server Knowledge Base below.
-- If they ask when staff/admins will arrive or why it is taking long, reassure them casually that leadership has been notified and will check in as soon as they are free.
-- If they are just making small talk or saying "thanks", "hello", "what's up", respond friendly and conversationally like a human recruiter hanging out in the channel.
 - Keep complete=true and requestedAction="none".`;
   } else if (progress.isComplete) {
     const unavailReminder =
