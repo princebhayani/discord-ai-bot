@@ -397,33 +397,16 @@ export function CategoryManagerClient({
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                    <div>
-                      <p className="text-xs font-medium text-foreground">External Bot Lookups</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        Permit queries to external bot in this category
-                      </p>
-                    </div>
-                    <Switch
-                      checked={selectedCategory.playerLookupEnabled}
-                      onCheckedChange={(checked) =>
-                        updateSelected({ playerLookupEnabled: checked })
-                      }
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Report Channel Override ID</Label>
-                    <Input
-                      className="bg-muted/30 border-border/60 font-mono text-xs"
-                      placeholder="Optional staff channel Snowflake ID"
-                      value={selectedCategory.reportChannelOverrideId ?? ''}
-                      onChange={(e) =>
-                        updateSelected({ reportChannelOverrideId: e.target.value })
-                      }
-                    />
-                  </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Report Channel Override ID (Optional)</Label>
+                  <Input
+                    className="bg-muted/30 border-border/60 font-mono text-xs"
+                    placeholder="Optional staff channel Snowflake ID for transcripts from this category"
+                    value={selectedCategory.reportChannelOverrideId ?? ''}
+                    onChange={(e) =>
+                      updateSelected({ reportChannelOverrideId: e.target.value })
+                    }
+                  />
                 </div>
 
                 <div className="space-y-1.5">

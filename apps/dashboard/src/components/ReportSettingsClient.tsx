@@ -254,23 +254,13 @@ export function ReportSettingsClient({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
               <Label className="text-xs text-muted-foreground cursor-pointer">Structured Answers</Label>
               <Switch
                 checked={reportSettings.includeRawAnswers}
                 onCheckedChange={(checked) =>
                   setReportSettings({ ...reportSettings, includeRawAnswers: checked })
-                }
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-              <Label className="text-xs text-muted-foreground cursor-pointer">Lookup Diagnostics</Label>
-              <Switch
-                checked={reportSettings.includeLookupDetails}
-                onCheckedChange={(checked) =>
-                  setReportSettings({ ...reportSettings, includeLookupDetails: checked })
                 }
               />
             </div>

@@ -14,7 +14,6 @@ import {
   LogOut,
   ShieldCheck,
   Sparkles,
-  Terminal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -49,7 +48,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'ENGINE & GUARDS',
     items: [
       { href: '/ai-settings', label: 'AI & Detection', icon: Bot },
-      { href: '/player-integration', label: 'Commands & Tools', icon: Terminal },
     ],
   },
 ];

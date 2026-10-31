@@ -212,21 +212,19 @@ Go to **Render -> Your Web Service -> Environment** and add these **10 rows** *(
 
 ---
 
-## Step 9: Configure Server Details, 1-Line DOT Commands & Categories in Dashboard
+## Step 9: Configure Server Details, Intake Questionnaire & Categories in Dashboard
 
 1. Log in at `https://your-dashboard.vercel.app/login` and verify **Bot Worker Online** is green on **Overview**.
 2. **Server Info & Persona (`/server-info`):**
-   - Set your **Server / Clan Family Name** (e.g. `Boom House`) and **Bot Persona Name** (e.g. `Duke The Recruiter`).
+   - Set your **Server / Community Name** (e.g. `Boom House`) and **Bot Persona Name** (e.g. `Duke The Recruiter`).
    - Keep **Tag Opener on 1st Message**, **Ignore Private Threads**, and **Humanize Replies** **ON**.
-   - Fill in the **4 Server & Clan Details** boxes (or click **Fill Sample Clan Template** and customize your clan requirements, rules, and expected leader response time) -> click **Save & Publish Server Info**.
-3. **DOT Commands (`/player-integration`):**
-   - Toggle **Enabled** **ON**.
-   - In **1. Your DOT Command (1 Line)**, type just one line: e.g. `.p {tag}` or `.player {tag}`.
-   - Paste your **Stats Bot's Discord User ID** (e.g. ClashPerk / ClashKing User ID), choose **Inside the Ticket Channel** (or a Dedicated Bot Channel), toggle your category **ON**, and click **Save & Publish DOT Command Setup**.
-4. **Category Management (`/categories`) & Question Builder (`/questions`):**
-   - Paste your Discord Ticket Category ID, toggle **Enable AI in Category** **ON** -> **Publish Category Version**.
-   - Add your intake questions (e.g. `player_tag`) in **Question Builder** -> **Publish Questionnaire**.
-5. **Report Settings (`/reports`):** Paste your pre-existing **Staff Report Channel ID** -> click **Publish**.
+   - Fill in your community knowledge boxes (or click **Load Community Preset**) -> click **Save Server & Persona**.
+3. **Category Management (`/categories`):**
+   - Register your Discord Ticket Category ID, toggle **Enable AI in Category** **ON** -> **Publish Category Snapshot**.
+4. **Intake Questionnaire Builder (`/questions`):**
+   - Click **Load Full Community Template (4 Questions)** or add custom questions -> click **Publish Questionnaire**.
+5. **Staff Reports (`/reports`):**
+   - Paste your pre-existing **Staff Report Channel ID** -> click **Publish Report & Privacy Rules**.
 
 ---
 
