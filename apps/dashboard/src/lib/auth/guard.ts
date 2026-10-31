@@ -265,15 +265,6 @@ export async function requireDashboardModerator(): Promise<VerifiedModeratorCont
   const check = await verifyDashboardModerator();
   if (!check.authorized) {
     const params = new URLSearchParams({ reason: check.reason });
-    if (check.missingVars && check.missingVars.length > 0) {
-      params.set('missing', check.missingVars.join(', '));
-    }
-    if (check.discordUserId) {
-      params.set('uid', check.discordUserId);
-    }
-    if (check.guildId) {
-      params.set('gid', check.guildId);
-    }
     redirect(`/login?${params.toString()}`);
   }
   return check.moderator;
