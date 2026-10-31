@@ -130,7 +130,7 @@ export function SimpleDashboardClient({
   );
 
   // Primary Category & Intake Questions
-  const primaryCategory: CategoryConfig = initialCategories[0] || {
+  const defaultCategory: CategoryConfig = {
     guildId: initialServerSettings.guildId,
     categoryId: '123456789012345678',
     categoryName: 'General Tickets',
@@ -144,14 +144,32 @@ export function SimpleDashboardClient({
     configVersion: 1,
   };
 
-  const [categoryId, setCategoryId] = useState(primaryCategory.categoryId);
-  const [categoryName, setCategoryName] = useState(primaryCategory.categoryName);
-  const [categoryEnabled, setCategoryEnabled] = useState(primaryCategory.enabled);
+  const [activeCategory, setActiveCategory] = useState<CategoryConfig>(
+    initialCategories[0] ?? defaultCategory
+  );
+
+  const [categoryId, setCategoryId] = useState(activeCategory.categoryId);
+  const [categoryName, setCategoryName] = useState(activeCategory.categoryName);
+  const [categoryEnabled, setCategoryEnabled] = useState(activeCategory.enabled);
   const [questions, setQuestions] = useState<QuestionnaireQuestion[]>(
-    primaryCategory.questions.length > 0
-      ? primaryCategory.questions
+    activeCategory.questions.length > 0
+      ? activeCategory.questions
       : RECOMMENDED_QUESTIONS
   );
+
+  // Sync state when server props update (e.g. after router.refresh() or initial load)
+  useEffect(() => {
+    if (initialCategories.length > 0 && initialCategories[0]) {
+      const latest = initialCategories[0];
+      setActiveCategory(latest);
+      setCategoryId(latest.categoryId);
+      setCategoryName(latest.categoryName);
+      setCategoryEnabled(latest.enabled);
+      if (latest.questions && latest.questions.length > 0) {
+        setQuestions(latest.questions);
+      }
+    }
+  }, [initialCategories]);
 
   // Staff User IDs (exempt from bot questionnaire)
   const [staffUserIdsText, setStaffUserIdsText] = useState(
@@ -221,6 +239,13 @@ export function SimpleDashboardClient({
         .map((s) => s.trim())
         .filter(Boolean);
 
+      const trimmedCategoryId = categoryId.trim();
+      if (!/^\d{15,22}$/.test(trimmedCategoryId)) {
+        throw new Error(
+          'Ticket Category ID must be a valid 15-22 digit Discord Snowflake ID (e.g. 123456789012345678).'
+        );
+      }
+
       // Validate question keys
       const validatedQuestions = questions.map((q, i) => ({
         ...q,
@@ -264,10 +289,12 @@ export function SimpleDashboardClient({
         throw new Error(errJson.error ?? 'Failed saving server settings');
       }
 
-      // 2. Update Category Config with Questions
-      const categoryPayload: CategoryConfig = {
-        ...primaryCategory,
-        categoryId: categoryId.trim(),
+      // 2. Update Category Config with Questions (with previousCategoryId for rename support)
+      const categoryPayload = {
+        ...activeCategory,
+        id: activeCategory.id,
+        previousCategoryId: activeCategory.categoryId,
+        categoryId: trimmedCategoryId,
         categoryName: categoryName.trim() || 'General Tickets',
         enabled: categoryEnabled,
         questions: validatedQuestions,
@@ -281,11 +308,21 @@ export function SimpleDashboardClient({
 
       if (!categoryRes.ok) {
         const errJson = (await categoryRes.json()) as { error?: string };
-        throw new Error(errJson.error ?? 'Failed saving ticket questions');
+        throw new Error(errJson.error ?? 'Failed saving ticket category');
+      }
+
+      const { category: savedCat } = (await categoryRes.json()) as {
+        category: CategoryConfig;
+      };
+      if (savedCat) {
+        setActiveCategory(savedCat);
+        setCategoryId(savedCat.categoryId);
+        setCategoryName(savedCat.categoryName);
+        setCategoryEnabled(savedCat.enabled);
       }
 
       router.refresh();
-      return 'Configuration published successfully.';
+      return 'All settings, category ID, and intake questions saved successfully.';
     });
   }
 
@@ -749,9 +786,15 @@ export function SimpleDashboardClient({
                 value={categoryId}
                 onChange={(e) => setCategoryId(e.target.value)}
               />
-              <p className="text-[11px] text-zinc-500">
-                Discord category snowflake where tickets are created.
-              </p>
+              {categoryId.trim() !== '' && !/^\d{15,22}$/.test(categoryId.trim()) ? (
+                <p className="text-[11px] text-amber-400">
+                  Must be a valid 15-22 digit Discord ID.
+                </p>
+              ) : (
+                <p className="text-[11px] text-zinc-500">
+                  Discord category snowflake where tickets are created.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">

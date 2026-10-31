@@ -108,7 +108,7 @@ export async function listCategoryConfigs(guildId: string): Promise<CategoryConf
     .from('ticket_category_configs')
     .select('*')
     .eq('guild_id', guildId)
-    .order('category_name', { ascending: true });
+    .order('updated_at', { ascending: false });
 
   if (error) {
     throw new Error(`Failed reading ticket_category_configs: ${error.message}`);
@@ -245,33 +245,97 @@ export async function upsertAndPublishCategoryConfig(
   rawInput: unknown
 ): Promise<CategoryConfig> {
   await getOrInitServerSettings(guildId);
+  const rawObj = (rawInput as Record<string, unknown>) || {};
+  const previousCategoryId =
+    typeof rawObj.previousCategoryId === 'string' && rawObj.previousCategoryId.trim()
+      ? rawObj.previousCategoryId.trim()
+      : undefined;
+  const targetId =
+    typeof rawObj.id === 'string' && rawObj.id.trim()
+      ? rawObj.id.trim()
+      : undefined;
+
   const parsed = CategoryConfigSchema.parse({
-    ...(rawInput as Record<string, unknown>),
+    ...rawObj,
     guildId,
   });
 
   const supabase = createSupabaseServiceClient();
-  const { data: existing } = await supabase
-    .from('ticket_category_configs')
-    .select('config_version')
-    .eq('guild_id', guildId)
-    .eq('category_id', parsed.categoryId)
-    .maybeSingle();
 
-  const nextVersion = existing
-    ? Number((existing as Record<string, unknown>).config_version ?? 1) + 1
-    : 1;
+  // 1. Locate existing category record by id, previousCategoryId, or new categoryId
+  let existingRowId: string | null = null;
+  let currentConfigVersion = 0;
+
+  if (targetId) {
+    const { data: byId } = await supabase
+      .from('ticket_category_configs')
+      .select('id, config_version, category_id')
+      .eq('guild_id', guildId)
+      .eq('id', targetId)
+      .maybeSingle();
+    if (byId) {
+      existingRowId = String(byId.id);
+      currentConfigVersion = Number(byId.config_version ?? 1);
+    }
+  }
+
+  if (!existingRowId && previousCategoryId) {
+    const { data: byPrev } = await supabase
+      .from('ticket_category_configs')
+      .select('id, config_version, category_id')
+      .eq('guild_id', guildId)
+      .eq('category_id', previousCategoryId)
+      .maybeSingle();
+    if (byPrev) {
+      existingRowId = String(byPrev.id);
+      currentConfigVersion = Number(byPrev.config_version ?? 1);
+    }
+  }
+
+  if (!existingRowId) {
+    const { data: byNewCat } = await supabase
+      .from('ticket_category_configs')
+      .select('id, config_version')
+      .eq('guild_id', guildId)
+      .eq('category_id', parsed.categoryId)
+      .maybeSingle();
+    if (byNewCat) {
+      existingRowId = String(byNewCat.id);
+      currentConfigVersion = Number(byNewCat.config_version ?? 1);
+    }
+  }
+
+  const nextVersion = currentConfigVersion > 0 ? currentConfigVersion + 1 : 1;
 
   const snapshotToPublish: CategoryConfig = {
     ...parsed,
     configVersion: nextVersion,
   };
 
-  const { data, error } = await supabase
-    .from('ticket_category_configs')
-    .upsert(
-      {
-        guild_id: guildId,
+  // If previousCategoryId was specified and differs from parsed.categoryId,
+  // delete the obsolete previous category record so it never lingers or reappears
+  if (previousCategoryId && previousCategoryId !== parsed.categoryId) {
+    await supabase
+      .from('ticket_category_configs')
+      .delete()
+      .eq('guild_id', guildId)
+      .eq('category_id', previousCategoryId);
+  }
+
+  let savedData: Record<string, unknown> | null = null;
+
+  if (existingRowId) {
+    // If another row already has the new categoryId, delete it first to avoid collision on (guild_id, category_id)
+    await supabase
+      .from('ticket_category_configs')
+      .delete()
+      .eq('guild_id', guildId)
+      .eq('category_id', parsed.categoryId)
+      .neq('id', existingRowId);
+
+    const { data, error } = await supabase
+      .from('ticket_category_configs')
+      .update({
         category_id: parsed.categoryId,
         category_name: parsed.categoryName,
         enabled: parsed.enabled,
@@ -284,20 +348,51 @@ export async function upsertAndPublishCategoryConfig(
         config_version: nextVersion,
         published_snapshot: snapshotToPublish,
         published_at: new Date().toISOString(),
-      },
-      { onConflict: 'guild_id,category_id' }
-    )
-    .select('*')
-    .single();
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existingRowId)
+      .eq('guild_id', guildId)
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error(`Failed publishing category config: ${error?.message}`);
+    if (error || !data) {
+      throw new Error(`Failed publishing category config: ${error?.message}`);
+    }
+    savedData = data as Record<string, unknown>;
+  } else {
+    const { data, error } = await supabase
+      .from('ticket_category_configs')
+      .upsert(
+        {
+          guild_id: guildId,
+          category_id: parsed.categoryId,
+          category_name: parsed.categoryName,
+          enabled: parsed.enabled,
+          welcome_message: parsed.welcomeMessage ?? null,
+          category_instructions: parsed.categoryInstructions,
+          faqs: parsed.faqs,
+          questions: parsed.questions,
+          player_lookup_enabled: parsed.playerLookupEnabled,
+          report_channel_override_id: parsed.reportChannelOverrideId || null,
+          config_version: nextVersion,
+          published_snapshot: snapshotToPublish,
+          published_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'guild_id,category_id' }
+      )
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      throw new Error(`Failed publishing category config: ${error?.message}`);
+    }
+    savedData = data as Record<string, unknown>;
   }
 
-  const row = data as Record<string, unknown>;
   return CategoryConfigSchema.parse({
     ...snapshotToPublish,
-    id: row.id,
+    id: String(savedData.id),
   });
 }
 
