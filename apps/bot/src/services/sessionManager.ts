@@ -1,10 +1,17 @@
-import type { CategoryConfig, ServerSettings, ThreadClosurePolicy } from '@hrbot/shared';
+import {
+  evaluateQuestionnaireProgress,
+  type CategoryConfig,
+  type ServerSettings,
+  type ThreadClosurePolicy,
+} from '@hrbot/shared';
 import type { ConfigService } from '../config/configService.js';
 import {
   evaluateObservedTicketCandidate,
   extractOpenerFromBotMessages,
+  extractTicketOpeningEmbedData,
   resolveOpenerFromChannelMetadata,
   verifyProviderOpeningMessage,
+  type ExtractedOpeningEmbedData,
 } from '../handlers/ticketDetector.js';
 import type { TicketQueueManager } from '../queues/ticketQueueManager.js';
 import type {
@@ -72,10 +79,17 @@ export function formatWelcomeMessageWithUserTag(params: {
   return welcomeMessage;
 }
 
+export type OpeningEmbedIntakeCallback = (params: {
+  session: TicketSessionRecord;
+  embedData: ExtractedOpeningEmbedData;
+  signal: AbortSignal;
+}) => Promise<TicketSessionRecord | void>;
+
 export class SessionManager {
   private readonly activeSessionsByChannel = new Map<string, TicketSessionRecord>();
   private readonly pendingCandidates = new Map<string, PendingCandidate>();
   private readonly staffThreadsByTicketChannel = new Map<string, string>();
+  private onOpeningEmbedExtracted?: OpeningEmbedIntakeCallback;
 
   constructor(
     private readonly guildId: string,
@@ -85,6 +99,10 @@ export class SessionManager {
     private readonly queueManager: TicketQueueManager,
     private readonly logger: Logger
   ) {}
+
+  setOpeningEmbedIntakeCallback(cb: OpeningEmbedIntakeCallback): void {
+    this.onOpeningEmbedExtracted = cb;
+  }
 
   getActiveSessionInMemory(channelId: string): TicketSessionRecord | undefined {
     return this.activeSessionsByChannel.get(channelId);
@@ -276,16 +294,18 @@ export class SessionManager {
       verifiedBy: 'provider_message',
       playerDiscordId: check.detectedOpenerId,
       playerUsername: null,
+      openingMessagesHint: [message],
     });
   }
 
-  private async resolveSingleTicketOpener(params: {
+  private async inspectOpeningChannelContext(params: {
     channel: ObservedChannelMetadata;
     initialOpenerId: string | null;
     serverSettings: ServerSettings;
+    openingMessagesHint?: readonly NormalizedDiscordMessage[];
     signal: AbortSignal;
-  }): Promise<string | null> {
-    const { channel, initialOpenerId, serverSettings, signal } = params;
+  }): Promise<{ openerId: string | null; messages: NormalizedDiscordMessage[] }> {
+    const { channel, initialOpenerId, serverSettings, openingMessagesHint = [], signal } = params;
     const ourBotId = this.messenger.getBotUserId();
     const externalBotId = serverSettings.playerIntegrationConfig.externalBotUserId || null;
     const knownBotIds = new Set<string>(
@@ -308,64 +328,84 @@ export class SessionManager {
       });
     }
 
+    const mergeMessages = (
+      fetched: NormalizedDiscordMessage[]
+    ): NormalizedDiscordMessage[] => {
+      const byId = new Map<string, NormalizedDiscordMessage>();
+      for (const m of openingMessagesHint) byId.set(m.id, m);
+      for (const m of fetched) byId.set(m.id, m);
+      return Array.from(byId.values());
+    };
+
+    let collectedMessages = [...openingMessagesHint];
+
     try {
-      let recentMessages = await this.messenger.fetchRecentMessages(channel.channelId, 8);
-      const hasTicketBotOpeningPanel = recentMessages.some(
-        (m) => m.authorBot && m.authorId !== ourBotId && m.authorId !== externalBotId
-      );
+      const initialFetch = await this.messenger.fetchRecentMessages(channel.channelId, 8);
+      collectedMessages = mergeMessages(initialFetch);
 
-      // On live Discord channels, wait briefly if the ticket bot hasn't posted its opening panel yet
-      // so our welcome appears below the ticket panel AND captures `<@OPENER_ID>` reliably.
-      if (
-        !hasTicketBotOpeningPanel &&
-        channel.permissionMemberIds !== undefined &&
-        !signal.aborted
-      ) {
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 1400);
-          signal.addEventListener(
-            'abort',
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true }
-          );
-        });
+      const hasTicketBotOpeningPanel = () =>
+        collectedMessages.some(
+          (m) => m.authorBot && m.authorId !== ourBotId && m.authorId !== externalBotId
+        );
 
-        if (!signal.aborted) {
-          recentMessages = await this.messenger.fetchRecentMessages(channel.channelId, 8);
-          if (!candidateOpenerId) {
-            const refreshedMeta = await this.messenger.fetchChannelMetadata(channel.channelId);
-            candidateOpenerId = resolveOpenerFromChannelMetadata({
-              channel: refreshedMeta,
-              knownBotIds,
-              staffUserIds,
-            });
+      // On live Discord channels, poll briefly if the ticket bot hasn't posted its opening embed yet
+      // so our welcome appears below the ticket panel AND grabs both `<@OPENER_ID>` and `player tag`!
+      const pollDelaysMs = [500, 650, 750];
+      if (!hasTicketBotOpeningPanel() && channel.permissionMemberIds !== undefined) {
+        for (const delayMs of pollDelaysMs) {
+          if (signal.aborted || hasTicketBotOpeningPanel()) break;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, delayMs);
+            signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+
+          if (!signal.aborted) {
+            const nextFetch = await this.messenger.fetchRecentMessages(channel.channelId, 8);
+            collectedMessages = mergeMessages(nextFetch);
           }
+        }
+
+        if (!signal.aborted && !candidateOpenerId) {
+          const refreshedMeta = await this.messenger.fetchChannelMetadata(channel.channelId);
+          candidateOpenerId = resolveOpenerFromChannelMetadata({
+            channel: refreshedMeta,
+            knownBotIds,
+            staffUserIds,
+          });
         }
       }
 
       const fromBotPanel = extractOpenerFromBotMessages({
-        messages: recentMessages,
+        messages: collectedMessages,
         knownBotIds,
         ourBotUserId: ourBotId,
         externalDataBotId: externalBotId,
         staffUserIds,
       });
       if (fromBotPanel) {
-        return fromBotPanel;
+        candidateOpenerId = fromBotPanel;
       }
     } catch {
       // Non-fatal fallback to channel overwrite/topic opener ID
     }
 
-    return candidateOpenerId;
+    return {
+      openerId: candidateOpenerId,
+      messages: collectedMessages,
+    };
   }
 
   /**
-   * Initializes an isolated AI session with a frozen config snapshot and sends
-   * the server welcome message strictly once (tagging the single ticket opener).
+   * Initializes an isolated AI session with a frozen config snapshot, automatically extracts
+   * any player tag / application answers already present in the ticket bot's 1st embed,
+   * and sends the welcome message strictly once (tagging the single ticket opener).
    */
   async initializeSessionAndSendWelcome(params: {
     channel: ObservedChannelMetadata;
@@ -373,8 +413,16 @@ export class SessionManager {
     verifiedBy: string;
     playerDiscordId: string | null;
     playerUsername: string | null;
+    openingMessagesHint?: readonly NormalizedDiscordMessage[];
   }): Promise<TicketSessionRecord | null> {
-    const { channel, categoryConfig, verifiedBy, playerDiscordId, playerUsername } = params;
+    const {
+      channel,
+      categoryConfig,
+      verifiedBy,
+      playerDiscordId,
+      playerUsername,
+      openingMessagesHint,
+    } = params;
 
     const result = await this.queueManager.enqueueForTicket(
       channel.channelId,
@@ -382,20 +430,31 @@ export class SessionManager {
         if (signal.aborted) return null;
 
         const { serverSettings } = await this.configService.getGuildConfiguration();
-        const snapshot = this.configService.buildSessionConfigSnapshot(
-          serverSettings,
-          categoryConfig
-        );
-
-        const resolvedOpenerId = await this.resolveSingleTicketOpener({
-          channel,
-          initialOpenerId: playerDiscordId,
-          serverSettings,
-          signal,
-        });
+        const { openerId: resolvedOpenerId, messages: openingMessages } =
+          await this.inspectOpeningChannelContext({
+            channel,
+            initialOpenerId: playerDiscordId,
+            serverSettings,
+            openingMessagesHint,
+            signal,
+          });
         if (signal.aborted) return null;
 
-        const { session } = await this.repo.createOrGetTicketSession({
+        const embedData = extractTicketOpeningEmbedData({
+          messages: openingMessages,
+          questions: categoryConfig.questions,
+          ourBotUserId: this.messenger.getBotUserId(),
+          externalDataBotId:
+            serverSettings.playerIntegrationConfig.externalBotUserId || null,
+        });
+
+        const snapshot = this.configService.buildSessionConfigSnapshot(
+          serverSettings,
+          categoryConfig,
+          embedData.matchedQuestionAnswers
+        );
+
+        const { session, created } = await this.repo.createOrGetTicketSession({
           guildId: this.guildId,
           channelId: channel.channelId,
           parentChannelId: channel.parentChannelId,
@@ -418,9 +477,60 @@ export class SessionManager {
           if (patched) currentSession = patched;
         }
 
+        // Persist any answers grabbed directly from the 1st ticket embed (e.g. player_tag: #9RQU2YQPL)
+        for (const [questionKey, answerValue] of Object.entries(embedData.matchedQuestionAnswers)) {
+          if (answerValue === null || answerValue === undefined) continue;
+          await this.repo.upsertTicketAnswer({
+            sessionId: currentSession.id,
+            questionKey,
+            answerValue,
+            rawText: String(answerValue),
+            validated: true,
+            validationNote: 'Extracted from ticket opening embed',
+          });
+        }
+
+        if (created && embedData.rawSummaryLines.length > 0) {
+          await this.repo.appendTicketMessage({
+            sessionId: currentSession.id,
+            discordMessageId: null,
+            senderType: 'system',
+            senderDiscordId: null,
+            content: `Ticket opening embed fields: ${embedData.rawSummaryLines.join(' | ')}`,
+            redacted: false,
+          });
+        }
+
         if (!currentSession.welcomeSent && !signal.aborted) {
+          const progressAfterEmbed = evaluateQuestionnaireProgress(
+            categoryConfig.questions,
+            embedData.matchedQuestionAnswers
+          );
+          const expectsPlayerTag =
+            embedData.hasPlayerTagField ||
+            (categoryConfig.playerLookupEnabled && serverSettings.playerIntegrationConfig.enabled) ||
+            /\bplayer\s*tag\b/i.test(
+              `${serverSettings.aiSettings.serverKnowledge.joiningProcessAndTiming} ${categoryConfig.categoryInstructions}`
+            );
+
+          let dynamicWelcomeBody = currentSession.configSnapshot.welcomeMessage;
+          if (
+            embedData.playerTag &&
+            progressAfterEmbed.isComplete &&
+            currentSession.configSnapshot.aiSettings.humanizeConversation !== false &&
+            !dynamicWelcomeBody.includes(embedData.playerTag)
+          ) {
+            dynamicWelcomeBody = `${dynamicWelcomeBody} - got your tag ${embedData.playerTag} from your ticket, passing your info over to the leaders now so someone will hop in here soon.`;
+          } else if (
+            !embedData.playerTag &&
+            expectsPlayerTag &&
+            !dynamicWelcomeBody.includes('?')
+          ) {
+            dynamicWelcomeBody = `${dynamicWelcomeBody} - mind dropping your player tag so i can check out your base?`;
+          }
+
           const welcomeText = formatWelcomeMessageWithUserTag({
-            welcomeMessage: currentSession.configSnapshot.welcomeMessage,
+            welcomeMessage: dynamicWelcomeBody,
             playerDiscordId: currentSession.playerDiscordId,
             mentionUserOnWelcome: currentSession.configSnapshot.mentionUserOnWelcome,
           });
@@ -446,11 +556,30 @@ export class SessionManager {
         }
 
         this.activeSessionsByChannel.set(channel.channelId, currentSession);
+
+        if (
+          created &&
+          Object.keys(embedData.matchedQuestionAnswers).length > 0 &&
+          this.onOpeningEmbedExtracted &&
+          !signal.aborted
+        ) {
+          const postHookSession = await this.onOpeningEmbedExtracted({
+            session: currentSession,
+            embedData,
+            signal,
+          });
+          if (postHookSession) {
+            currentSession = postHookSession;
+            this.activeSessionsByChannel.set(channel.channelId, currentSession);
+          }
+        }
+
         this.logger.info('Initialized ticket AI session', {
           sessionId: currentSession.id,
           channelId: currentSession.channelId,
           categoryId: currentSession.categoryId,
           verifiedBy,
+          embedTagFound: Boolean(embedData.playerTag),
           configVersion: currentSession.configVersion,
         });
         return currentSession;

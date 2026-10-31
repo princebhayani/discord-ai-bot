@@ -1,5 +1,7 @@
 import {
+  evaluateQuestionnaireProgress,
   SessionConfigSnapshotSchema,
+  type AnswerPrimitive,
   type CategoryConfig,
   type ServerSettings,
   type SessionConfigSnapshot,
@@ -55,7 +57,8 @@ export class ConfigService {
    */
   buildSessionConfigSnapshot(
     serverSettings: ServerSettings,
-    category: CategoryConfig
+    category: CategoryConfig,
+    preExtractedAnswers: Record<string, AnswerPrimitive> = {}
   ): SessionConfigSnapshot {
     const baseWelcome = (
       category.welcomeMessage && category.welcomeMessage.trim().length > 0
@@ -63,7 +66,8 @@ export class ConfigService {
         : serverSettings.defaultWelcomeMessage
     ).trim();
 
-    const firstQuestion = category.questions[0];
+    const progress = evaluateQuestionnaireProgress(category.questions, preExtractedAnswers);
+    const firstQuestion = progress.nextRecommendedQuestion ?? undefined;
     const welcomeIncludesPrompt = baseWelcome.includes('?');
     const welcomeMessage =
       firstQuestion && !welcomeIncludesPrompt

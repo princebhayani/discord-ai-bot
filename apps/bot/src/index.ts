@@ -153,6 +153,67 @@ export async function startAssistantBot(
     }
   );
 
+  sessionManager.setOpeningEmbedIntakeCallback(async ({ session, embedData, signal }) => {
+    let activeSession = session;
+
+    // 1. If a valid player_tag was grabbed from the 1st ticket embed and DOT lookup is enabled, run it automatically!
+    if (
+      embedData.playerTag &&
+      activeSession.configSnapshot.playerIntegrationConfig.enabled &&
+      activeSession.configSnapshot.category.playerLookupEnabled &&
+      !signal.aborted
+    ) {
+      const pending = await repo.updateTicketSession(activeSession.id, {
+        status: 'lookup_pending',
+      });
+      if (pending) activeSession = pending;
+
+      await playerAdapter.executeLookup({
+        session: activeSession,
+        rawAction: 'lookup_player',
+        rawTarget: embedData.playerTag,
+        signal,
+      });
+
+      if (!signal.aborted) {
+        const restored = await repo.updateTicketSession(activeSession.id, {
+          status: 'active',
+        });
+        if (restored) activeSession = restored;
+      }
+    }
+
+    // 2. If all required intake questions were already satisfied by the 1st embed, mark ready_for_review & notify staff
+    const progress =
+      activeSession.configSnapshot.category.questions.length > 0
+        ? activeSession.configSnapshot.category.questions.every(
+            (q) => !q.required || embedData.matchedQuestionAnswers[q.key] !== undefined
+          )
+        : Boolean(embedData.playerTag);
+
+    if (progress && !activeSession.reportDelivered && !signal.aborted) {
+      const ready = await repo.updateTicketSession(activeSession.id, {
+        status: 'ready_for_review',
+      });
+      if (ready) activeSession = ready;
+
+      await reportService.generateAndDeliverReport({
+        session: activeSession,
+        issueSummary: embedData.playerTag
+          ? `Player opened ticket with application tag ${embedData.playerTag}${embedData.rawSummaryLines.length > 0 ? ` (${embedData.rawSummaryLines.join('; ')})` : ''}.`
+          : null,
+        neutralAssessment:
+          'Application fields automatically extracted from initial ticket embed; ready for leadership review.',
+        signal,
+      });
+
+      const refreshed = await repo.getTicketSessionByChannel(activeSession.channelId);
+      if (refreshed) activeSession = refreshed;
+    }
+
+    return activeSession;
+  });
+
   const closureObserver = new ClosureObserverService(
     env.DISCORD_GUILD_ID,
     repo,

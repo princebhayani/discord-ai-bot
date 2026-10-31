@@ -3,6 +3,7 @@ import {
   AiTurnResponseSchema,
   getGroqModelCapabilities,
   isUnavailableAnswer,
+  resolveActiveGroqModelId,
   type AiTurnResponse,
   type AnswerPrimitive,
   type ParsedPlayerProfile,
@@ -87,12 +88,14 @@ export class OfficialGroqSdkClient implements GroqCompletionClient {
   }
 
   async complete(req: RawGroqChatRequest): Promise<RawGroqChatResult> {
+    const isGptOssReasoning = req.model.startsWith('openai/gpt-oss-');
     const response = await this.client.chat.completions.create(
       {
         model: req.model,
         messages: req.messages,
         temperature: req.temperature,
         max_completion_tokens: req.maxTokens,
+        ...(isGptOssReasoning ? { reasoning_effort: 'low' as const } : {}),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- groq-sdk response_format union supports json_schema & json_object
         response_format: req.responseFormat as any,
         ...(req.tools && req.tools.length > 0 ? { tools: req.tools, tool_choice: 'auto' as const } : {}),
@@ -364,6 +367,11 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
     .filter(([, val]) => isUnavailableAnswer(val))
     .map(([key]) => key);
 
+  const collectedPlayerTag =
+    typeof validAnswers.player_tag === 'string' && !isUnavailableAnswer(validAnswers.player_tag)
+      ? validAnswers.player_tag
+      : null;
+
   const previousAssistantReplies = conversationHistory
     .filter((m) => m.senderType === 'assistant')
     .map((m) => m.content)
@@ -412,7 +420,11 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
         `  * NEVER say "Could you please provide", "How can I help you today?", "Thank you for your patience", or "A staff member will review your request shortly."`,
         ``,
         `# Situational Cover Playbook`,
-        `- Bare greeting ("hi", "hey", "yo"): Don't bark a stiff command! Greet them back casually and ask if they're looking to join ${snapshot.guildName} (and if so, to share their player tag so you can check out their base) or if they need help with something else.`,
+        `- Bare greeting ("hi", "hey", "yo"): ${
+          collectedPlayerTag
+            ? `You ALREADY grabbed their player tag (${collectedPlayerTag}) from the 1st ticket embed! NEVER ask for their player tag - greet them back casually, mention you already see ${collectedPlayerTag} on their ticket, and let them know leadership will check their base soon (or ask if they have any questions).`
+            : `Don't bark a stiff command! Greet them back casually and ask if they're looking to join ${snapshot.guildName} (and if so, to share their player tag so you can check out their base) or if they need help with something else.`
+        }`,
         `- Opener says they DON'T have / can't check something ("i don't have", "idk", "can't open game"):`,
         `  * Accept it immediately with zero pressure! NEVER ask for an [Unavailable] field again on ANY later turn (do NOT say "drop your tag when you get a chance"!).`,
         `  * If you haven't got any info about them yet, ask ONE easy backup question (like their Town Hall level and what kind of clan vibe/spot they're looking for) with complete=false.`,
@@ -432,7 +444,10 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
       unavailableKeys.length > 0
         ? ` ABSOLUTE RULE: (${unavailableKeys.join(', ')}) was marked [Unavailable] - NEVER mention, hint at, or ask for (${unavailableKeys.join(', ')}) again!`
         : '';
-    intakeStateNote = `INTAKE STATUS: ALL REQUIRED INFO IS COMPLETE!${unavailReminder} Acknowledge what they shared naturally, let them know you've passed their info to the leaders who will check this ticket soon (if you already told them that earlier, don't repeat it - just answer their follow-up casually using the Server Knowledge below), write a clear issueSummary & neutralAssessment including any self-reported details (TH level, raid weekend, etc.), and keep complete=true.`;
+    const collectedTagReminder = collectedPlayerTag
+      ? ` Player tag (${collectedPlayerTag}) is ALREADY collected from the ticket - DO NOT ask for their player tag!`
+      : '';
+    intakeStateNote = `INTAKE STATUS: ALL REQUIRED INFO IS COMPLETE!${unavailReminder}${collectedTagReminder} Acknowledge what they shared naturally, let them know you've passed their info to the leaders who will check this ticket soon (if you already told them that earlier, don't repeat it - just answer their follow-up casually using the Server Knowledge below), write a clear issueSummary & neutralAssessment including any self-reported details (TH level, raid weekend, etc.), and keep complete=true.`;
   } else {
     const unavailReminder =
       unavailableKeys.length > 0
@@ -503,7 +518,18 @@ export class GroqAiService {
 
   async generateTurn(input: AiTurnInput): Promise<AiTurnOutput> {
     const { snapshot, conversationHistory, signal } = input;
-    const model = snapshot.aiSettings.model.trim() || this.defaultModel;
+    const rawConfiguredModel = snapshot.aiSettings.model.trim() || this.defaultModel;
+    const resolvedModel = resolveActiveGroqModelId(rawConfiguredModel, this.defaultModel);
+    if (resolvedModel.replacedDeprecated) {
+      this.logger.warn(
+        'Configured Groq model is officially deprecated/decommissioned; auto-upgrading to active replacement',
+        {
+          deprecatedModel: rawConfiguredModel,
+          activeReplacement: resolvedModel.modelId,
+        }
+      );
+    }
+    const model = resolvedModel.modelId;
     const capabilities = getGroqModelCapabilities(model);
     this.semaphore.setLimit(snapshot.aiSettings.globalConcurrencyLimit);
 
@@ -549,6 +575,11 @@ export class GroqAiService {
       type: 'json_object',
     };
 
+    // Reasoning models (e.g. openai/gpt-oss-120b, qwen3.8) count chain-of-thought inside max_completion_tokens
+    const effectiveMaxTokens = capabilities.isReasoningModel
+      ? Math.max(snapshot.aiSettings.maxTokens, 2048)
+      : snapshot.aiSettings.maxTokens;
+
     return this.semaphore.run(async () => {
       let rawResult: RawGroqChatResult;
       let formatUsed: 'json_schema' | 'json_object' = preferStrictSchema
@@ -560,7 +591,7 @@ export class GroqAiService {
           model,
           messages,
           temperature: effectiveTemperature,
-          maxTokens: snapshot.aiSettings.maxTokens,
+          maxTokens: effectiveMaxTokens,
           responseFormat: preferStrictSchema ? strictFormat : jsonObjectFormat,
           signal,
         });
@@ -579,7 +610,7 @@ export class GroqAiService {
             model,
             messages,
             temperature: effectiveTemperature,
-            maxTokens: snapshot.aiSettings.maxTokens,
+            maxTokens: effectiveMaxTokens,
             responseFormat: jsonObjectFormat,
             signal,
           });

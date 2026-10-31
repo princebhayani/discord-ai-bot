@@ -14,6 +14,8 @@ import {
 } from '../services/safeDiscordMessenger.js';
 import {
   evaluateObservedTicketCandidate,
+  extractTicketOpeningEmbedData,
+  parseCandidatePlayerTag,
   verifyProviderOpeningMessage,
   verifySignedTicketWebhook,
 } from './ticketDetector.js';
@@ -264,6 +266,123 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
         secret,
       })
     ).toThrow();
+  });
+
+  it('extracts player tags from ClashDuke opening embeds while ignoring ticket counter #0111 and handling missing tags', () => {
+    expect(parseCandidatePlayerTag('Open Ticket · #0111', false)).toBeNull();
+    expect(parseCandidatePlayerTag('#9rqu2yqpl', false)).toBe('#9RQU2YQPL');
+    expect(parseCandidatePlayerTag('9rqu2yqpl', true)).toBe('#9RQU2YQPL');
+    expect(parseCandidatePlayerTag('idk', true)).toBeNull();
+
+    // 1. Exact ClashDuke opening embed with description blockquote & empty category.questions
+    const extractedFromDescription = extractTicketOpeningEmbedData({
+      messages: [
+        {
+          id: 'clashduke-open-1',
+          channelId: '777777777777777777',
+          guildId: GUILD_ID,
+          authorId: TICKET_BOT_ID,
+          authorUsername: 'ClashDuke',
+          authorBot: true,
+          content: `<@${PLAYER_ID}>`,
+          embeds: [
+            {
+              title: 'Open Ticket · #0111',
+              description: `Opened by <@${PLAYER_ID}>\n\n**Application**\n> **player tag**\n> #9rqu2yqpl`,
+              fields: [],
+            },
+          ],
+          mentionsUserIds: [PLAYER_ID],
+          createdTimestamp: Date.now(),
+        },
+      ],
+      questions: [],
+      ourBotUserId: OUR_BOT_ID,
+    });
+
+    expect(extractedFromDescription.hasPlayerTagField).toBe(true);
+    expect(extractedFromDescription.playerTag).toBe('#9RQU2YQPL');
+    expect(extractedFromDescription.matchedQuestionAnswers.player_tag).toBe('#9RQU2YQPL');
+
+    // 2. ClashDuke embed using an Application field + multi-line >>> subtext + unprefixed tag + extra question
+    const extractedFromField = extractTicketOpeningEmbedData({
+      messages: [
+        {
+          id: 'clashduke-open-2',
+          channelId: '777777777777777778',
+          guildId: GUILD_ID,
+          authorId: TICKET_BOT_ID,
+          authorUsername: 'ClashDuke',
+          authorBot: true,
+          content: `<@${PLAYER_ID}>`,
+          embeds: [
+            {
+              title: 'Open Ticket · #0112',
+              description: `Opened by <@${PLAYER_ID}>`,
+              fields: [
+                {
+                  name: 'Application',
+                  value: '>>> -# **player tag**\n9rqu2yqpl\n\n-# **town hall**\n15',
+                },
+              ],
+            },
+          ],
+          mentionsUserIds: [PLAYER_ID],
+          createdTimestamp: Date.now(),
+        },
+      ],
+      questions: [
+        {
+          key: 'player_tag',
+          question: 'What is your player tag?',
+          type: 'player_tag',
+          required: true,
+        },
+        {
+          key: 'town_hall',
+          question: 'What is your town hall level?',
+          type: 'number',
+          required: true,
+        },
+      ],
+      ourBotUserId: OUR_BOT_ID,
+    });
+
+    expect(extractedFromField.playerTag).toBe('#9RQU2YQPL');
+    expect(extractedFromField.matchedQuestionAnswers).toEqual({
+      player_tag: '#9RQU2YQPL',
+      town_hall: 15,
+    });
+
+    // 3. ClashDuke embed where player wrote "idk" or left tag blank -> playerTag is null (never #0111!)
+    const missingTagEmbed = extractTicketOpeningEmbedData({
+      messages: [
+        {
+          id: 'clashduke-open-3',
+          channelId: '777777777777777779',
+          guildId: GUILD_ID,
+          authorId: TICKET_BOT_ID,
+          authorUsername: 'ClashDuke',
+          authorBot: true,
+          content: `<@${PLAYER_ID}>`,
+          embeds: [
+            {
+              title: 'Open Ticket · #0111',
+              description: `Opened by <@${PLAYER_ID}>\n\n**Application**\n> **player tag**\n> idk`,
+              fields: [],
+            },
+          ],
+          mentionsUserIds: [PLAYER_ID],
+          createdTimestamp: Date.now(),
+        },
+      ],
+      questions: [],
+      ourBotUserId: OUR_BOT_ID,
+    });
+
+    expect(missingTagEmbed.hasPlayerTagField).toBe(true);
+    expect(missingTagEmbed.playerTag).toBeNull();
+    expect(missingTagEmbed.matchedQuestionAnswers.player_tag).toBeUndefined();
   });
 });
 

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
-import { getGroqModelCapabilities, KNOWN_GROQ_MODELS } from '@hrbot/shared';
+import {
+  DEPRECATED_GROQ_MODEL_REPLACEMENTS,
+  getGroqModelCapabilities,
+  KNOWN_GROQ_MODELS,
+} from '@hrbot/shared';
 import { verifyDashboardModerator } from '@/lib/auth/guard';
 
 export async function GET() {
@@ -22,7 +26,14 @@ export async function GET() {
     const list = await groq.models.list();
     const liveIds = (list.data ?? [])
       .map((m) => m.id)
-      .filter((id) => !id.includes('whisper') && !id.includes('orpheus') && !id.includes('guard'));
+      .filter(
+        (id) =>
+          !id.includes('whisper') &&
+          !id.includes('orpheus') &&
+          !id.includes('guard') &&
+          !id.includes('tts') &&
+          !DEPRECATED_GROQ_MODEL_REPLACEMENTS[id]
+      );
 
     const mergedMap = new Map(KNOWN_GROQ_MODELS.map((m) => [m.id, m]));
     for (const id of liveIds) {

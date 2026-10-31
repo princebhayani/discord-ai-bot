@@ -12,6 +12,8 @@ import {
 import type { ConfigService } from '../config/configService.js';
 import {
   extractOpenerFromBotMessages,
+  extractTicketOpeningEmbedData,
+  parseCandidatePlayerTag,
   resolveOpenerFromChannelMetadata,
 } from '../handlers/ticketDetector.js';
 import type { PlayerDataBotAdapter } from '../integrations/playerDataBotAdapter.js';
@@ -61,9 +63,13 @@ export class ConversationService {
     // 1. First let external player-data bot adapter inspect if this is a pending lookup reply
     this.playerAdapter.observeExternalBotMessage(message);
 
-    // 2. Ignore bot messages for conversational turns (prevents bot-to-bot loops)
+    // 2. Ignore bot messages for conversational turns (prevents bot-to-bot loops),
+    //    while promoting pending candidates OR extracting late ticket-opening embeds!
     if (message.authorBot) {
-      await this.sessionManager.tryPromotePendingCandidateOnMessage(message);
+      const promoted = await this.sessionManager.tryPromotePendingCandidateOnMessage(message);
+      if (!promoted && message.embeds.length > 0) {
+        await this.tryIngestLateProviderOpeningEmbed(message);
+      }
       return;
     }
 
@@ -296,6 +302,40 @@ export class ConversationService {
       }
 
       const latestProfile = this.mergeCompletedLookups(lookupRecords.map((l) => l.parsedData));
+
+      // Fallback embed sync: If player_tag hasn't been recorded yet on early turns, inspect recent channel
+      // messages once in case the ticket provider bot's 1st embed had `player tag: #9rqu2yqpl`.
+      if (validAnswers.player_tag === undefined) {
+        try {
+          const recentChannelMsgs = await this.messenger.fetchRecentMessages(
+            currentSession.channelId,
+            10
+          );
+          const embedData = extractTicketOpeningEmbedData({
+            messages: recentChannelMsgs,
+            questions: currentSession.configSnapshot.category.questions,
+            ourBotUserId: ourBotId,
+            externalDataBotId: externalBotId,
+          });
+          for (const [qKey, qVal] of Object.entries(embedData.matchedQuestionAnswers)) {
+            if (qVal !== null && qVal !== undefined && validAnswers[qKey] === undefined) {
+              validAnswers[qKey] = qVal;
+              delete invalidFieldErrors[qKey];
+              await this.repo.upsertTicketAnswer({
+                sessionId: currentSession.id,
+                questionKey: qKey,
+                answerValue: qVal,
+                rawText: String(qVal),
+                validated: true,
+                validationNote: 'Extracted from ticket opening embed',
+              });
+            }
+          }
+        } catch {
+          // Non-fatal fallback
+        }
+      }
+
       let initialProgress = evaluateQuestionnaireProgress(
         currentSession.configSnapshot.category.questions,
         validAnswers
@@ -303,11 +343,10 @@ export class ConversationService {
 
       // Pre-turn check: If opener explicitly says they don't have / can't check the requested info
       // (e.g. "i don't have", "idk", "can't open game"), mark that question [Unavailable] IMMEDIATELY
-      // so the AI never nags or repeats the question on subsequent turns.
+      // so the AI never nags or repeats the question on subsequent turns (works even when category.questions is []).
       const justMarkedUnavailableKeys: string[] = [];
       const assistantMessages = history.filter((m) => m.senderType === 'assistant');
       if (
-        initialProgress.missingRequiredQuestions.length > 0 &&
         assistantMessages.length > 0 &&
         detectUnavailableResponseIntent(sanitized.sanitizedText)
       ) {
@@ -319,17 +358,24 @@ export class ConversationService {
           initialProgress.nextRecommendedQuestion
         );
 
-        if (targetQuestion) {
+        const targetKey =
+          targetQuestion?.key ??
+          (validAnswers.player_tag === undefined &&
+          /\btag\b/i.test(`${sanitized.sanitizedText} ${lastAssistantContent}`)
+            ? 'player_tag'
+            : null);
+
+        if (targetKey) {
           const unavailableVal = formatUnavailableAnswer(
             'Opener said they do not have this right now'
           );
-          validAnswers[targetQuestion.key] = unavailableVal;
-          delete invalidFieldErrors[targetQuestion.key];
-          justMarkedUnavailableKeys.push(targetQuestion.key);
+          validAnswers[targetKey] = unavailableVal;
+          delete invalidFieldErrors[targetKey];
+          justMarkedUnavailableKeys.push(targetKey);
 
           await this.repo.upsertTicketAnswer({
             sessionId: currentSession.id,
-            questionKey: targetQuestion.key,
+            questionKey: targetKey,
             answerValue: unavailableVal,
             rawText: sanitized.sanitizedText,
             validated: true,
@@ -503,6 +549,32 @@ export class ConversationService {
             validated: false,
             validationNote: check.error ?? 'Invalid format',
           });
+        }
+      }
+
+      // Also capture explicit #TAG from chat even when category.questions is []
+      if (!questionsByKey.has('player_tag')) {
+        const directTag =
+          parseCandidatePlayerTag(sanitized.sanitizedText, false) ??
+          (aiOutput.turn.lookupTarget
+            ? parseCandidatePlayerTag(aiOutput.turn.lookupTarget, false)
+            : null);
+        if (directTag) {
+          validAnswers.player_tag = directTag;
+          await this.repo.upsertTicketAnswer({
+            sessionId: currentSession.id,
+            questionKey: 'player_tag',
+            answerValue: directTag,
+            rawText: directTag,
+            validated: true,
+            validationNote: null,
+          });
+          if (!autoTriggeredLookup) {
+            autoTriggeredLookup = {
+              action: 'lookup_player',
+              target: directTag,
+            };
+          }
         }
       }
 
@@ -695,6 +767,68 @@ export class ConversationService {
       return true;
     }
     return false;
+  }
+
+  private async tryIngestLateProviderOpeningEmbed(
+    message: NormalizedDiscordMessage
+  ): Promise<void> {
+    const ourBotId = this.messenger.getBotUserId();
+    if (ourBotId && message.authorId === ourBotId) return;
+
+    const existing = await this.sessionManager.resolveActiveSession(message.channelId);
+    if (!existing || existing.status === 'closing' || existing.status === 'human_handoff') {
+      return;
+    }
+
+    const externalBotId =
+      existing.configSnapshot.playerIntegrationConfig.externalBotUserId || null;
+    if (externalBotId && message.authorId === externalBotId) return;
+
+    await this.queueManager.enqueueForTicket(message.channelId, async (signal) => {
+      if (signal.aborted) return;
+      let currentSession = await this.sessionManager.resolveActiveSession(message.channelId);
+      if (!currentSession) return;
+
+      const embedData = extractTicketOpeningEmbedData({
+        messages: [message],
+        questions: currentSession.configSnapshot.category.questions,
+        ourBotUserId: ourBotId,
+        externalDataBotId: externalBotId,
+      });
+
+      const currentAnswers = await this.repo.listTicketAnswers(currentSession.id);
+      const existingKeys = new Set(currentAnswers.map((a) => a.questionKey));
+      let newlyExtractedTag: string | null = null;
+
+      for (const [qKey, qVal] of Object.entries(embedData.matchedQuestionAnswers)) {
+        if (qVal === null || qVal === undefined || existingKeys.has(qKey)) continue;
+        await this.repo.upsertTicketAnswer({
+          sessionId: currentSession.id,
+          questionKey: qKey,
+          answerValue: qVal,
+          rawText: String(qVal),
+          validated: true,
+          validationNote: 'Extracted from late ticket opening embed',
+        });
+        if (qKey === 'player_tag' && typeof qVal === 'string') {
+          newlyExtractedTag = qVal;
+        }
+      }
+
+      if (
+        newlyExtractedTag &&
+        currentSession.configSnapshot.playerIntegrationConfig.enabled &&
+        currentSession.configSnapshot.category.playerLookupEnabled &&
+        !signal.aborted
+      ) {
+        await this.playerAdapter.executeLookup({
+          session: currentSession,
+          rawAction: 'lookup_player',
+          rawTarget: newlyExtractedTag,
+          signal,
+        });
+      }
+    });
   }
 }
 
