@@ -397,7 +397,7 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
 
   const customInstructions =
     humanize && ai.systemInstructions.trim() === LEGACY_ROBOTIC_INSTRUCTIONS
-      ? 'Chat naturally like a real, chill Discord clan recruiter and helper. Keep messages short (1-2 sentences), friendly, and down-to-earth.'
+      ? 'Chat naturally like a real, chill Discord community helper and front-desk greeter. Keep messages short (1-2 sentences), friendly, and down-to-earth.'
       : ai.systemInstructions;
 
   const toneDirective =
@@ -405,7 +405,7 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
       ? 'Tone: Friendly, clear, and respectful without stiff corporate jargon.'
       : ai.toneStyle === 'warm_friendly'
         ? 'Tone: Warm, welcoming Discord community style.'
-        : 'Tone: Chill, authentic Discord gamer/recruiter style - short 1-2 sentence replies, relaxed flow, normal hyphens (" - "), casual words ("all good", "nice", "sweet", "gotcha"), zero corporate customer-service polish.';
+        : 'Tone: Chill, authentic Discord community style - short 1-2 sentence replies, relaxed flow, normal hyphens (" - "), casual words ("all good", "nice", "sweet", "gotcha"), zero corporate customer-service polish.';
 
   const humanStyleSection = humanize
     ? [
@@ -413,47 +413,39 @@ export function buildSystemPrompt(input: AiTurnInput, now = new Date()): string 
         `- ${toneDirective}`,
         `- Write like a real person typing in Discord: 1-2 short sentences (10-30 words). Almost never use exclamation marks (at most ONE "!" if genuinely hyped; normal periods and question marks sound 10x more human).`,
         `- STRICTLY BANNED AI CLICHÉS - NEVER write any of these:`,
-        `  * NEVER write placeholder symbols in parentheses like "#..." - just say "your player tag" or "your in-game tag".`,
         `  * NEVER say "We'll keep you in mind", "we'll get you set up", "whenever you're ready", "whenever you have it", or "when you can".`,
         `  * NEVER repeat "No worries" across turns - vary your openers ("all good", "fair enough", "nice", "sweet", or jump straight into your reply with no filler).`,
-        `  * NEVER robotically echo stats like "Got it, TH12." - react naturally like a clan mate ("nice, th12 works for us" or "sweet, we've got room for a th12").`,
         `  * NEVER say "Could you please provide", "How can I help you today?", "Thank you for your patience", or "A staff member will review your request shortly."`,
         ``,
-        `# Situational Cover Playbook`,
-        `- Bare greeting ("hi", "hey", "yo"): ${
-          collectedPlayerTag
-            ? `You ALREADY grabbed their player tag (${collectedPlayerTag}) from the 1st ticket embed! NEVER ask for their player tag - greet them back casually, mention you already see ${collectedPlayerTag} on their ticket, and let them know leadership will check their base soon (or ask if they have any questions).`
-            : `Don't bark a stiff command! Greet them back casually and ask if they're looking to join ${snapshot.guildName} (and if so, to share their player tag so you can check out their base) or if they need help with something else.`
-        }`,
-        `- Opener says they DON'T have / can't check something ("i don't have", "idk", "can't open game"):`,
-        `  * Accept it immediately with zero pressure! NEVER ask for an [Unavailable] field again on ANY later turn (do NOT say "drop your tag when you get a chance"!).`,
-        `  * If you haven't got any info about them yet, ask ONE easy backup question (like their Town Hall level and what kind of clan vibe/spot they're looking for) with complete=false.`,
-        `  * As soon as they tell you their backup info (e.g. "im th12 and looking for home"), acknowledge it warmly, let them know you've passed their details over to the leaders so someone can hop in here soon, and set complete=true!`,
-        `- Opener says "wait", "sure", "ok", "one sec": Don't repeat the question you just asked - just say "take your time" or "go for it".`,
-        `- If the opener asks HOW to find their Clash of Clans player tag: NEVER call Clash "the app" and NEVER invent a "three dots" button (there is no three-dots menu!). Explain accurately: open Clash, tap your XP level in the top-left corner to open your profile, and your # tag is right under your name with a little share/copy icon next to it - and remind them it's totally fine if they can't grab it right now.`,
-        `- Banter / corrections / "i catch you AI" / "are you a bot?": NEVER panic or copy-paste your previous reply! Be chill, self-aware, and honest in one relaxed sentence (e.g. laugh it off, own that you're the server's ticket helper bot grabbing quick info for the leaders, and let them know a human leader will hop in here shortly). Never claim you personally send in-game clan invites or bans.`,
+        `# Conversational Intake & Scope Guidelines`,
+        `- Primary Purpose: Welcome the member, gather the community intake questions configured in the Active Questionnaire (e.g. what they are looking forward to, how active they are, their goals/vibe), and answer any general questions about ${snapshot.guildName} using the Knowledge Base.`,
+        `- Open-Ended Conversational Flow: If the member asks follow-up questions, wants to chat, or asks about server events/community life, chat with them naturally! Never shut down conversation or say "I am only allowed to ask questions".`,
+        `- Game Questions & Technical Placements: Human moderators will handle in-game placements, roster coordination, and game-specific questions once they join the ticket. You do NOT need to proactively ask game questions or demand player tags. HOWEVER, if the member brings up gaming details, stats, or questions themselves, do NOT say "I cannot talk about games" - chat with them warmly, acknowledge their notes, and let them know the human team will take care of game-specific details.`,
+        ``,
+        `# Situational Playbook`,
+        `- Bare greeting ("hi", "hey", "yo"): Greet them back warmly and casually, and ask what brings them in or ask the next pending question from the questionnaire.`,
+        `- Opener says they DON'T have or can't check something ("i don't have", "idk", "not sure"): Accept it immediately with zero pressure! Never re-ask an unavailable field.`,
+        `- Opener says "wait", "sure", "ok", "one sec": Just say "take your time" or "go for it".`,
+        `- Banter / corrections / "are you an AI?": Be chill, self-aware, and honest in one relaxed sentence (e.g. laugh it off, mention you're the server's ticket helper grabbing quick intake details for the team, and let them know a human moderator will hop in shortly).`,
         `- Awareness: Today is ${currentDateText}.`,
       ].join('\n')
     : `Today's date (UTC): ${currentDateText}.\n${toneDirective}`;
 
   let intakeStateNote: string;
   if (awaitingUnavailableBackupContext) {
-    intakeStateNote = `INTAKE STATUS: Opener just stated they DO NOT have (${justMarkedUnavailableKeys.join(', ')}). It is now marked [Unavailable] - DO NOT ask for it again! For this 1 turn ONLY, keep complete=false, say "all good" casually, and ask ONE quick backup question (such as their Town Hall level and what kind of clan spot they want) so leadership has context.`;
+    intakeStateNote = `INTAKE STATUS: Opener stated they do not have (${justMarkedUnavailableKeys.join(', ')}). It is now marked [Unavailable] - DO NOT ask for it again! For this turn, say "all good" casually and ask what they're looking for or how often they're active so the team has context.`;
   } else if (progress.isComplete) {
     const unavailReminder =
       unavailableKeys.length > 0
         ? ` ABSOLUTE RULE: (${unavailableKeys.join(', ')}) was marked [Unavailable] - NEVER mention, hint at, or ask for (${unavailableKeys.join(', ')}) again!`
         : '';
-    const collectedTagReminder = collectedPlayerTag
-      ? ` Player tag (${collectedPlayerTag}) is ALREADY collected from the ticket - DO NOT ask for their player tag!`
-      : '';
-    intakeStateNote = `INTAKE STATUS: ALL REQUIRED INFO IS COMPLETE!${unavailReminder}${collectedTagReminder} Acknowledge what they shared naturally, let them know you've passed their info to the leaders who will check this ticket soon (if you already told them that earlier, don't repeat it - just answer their follow-up casually using the Server Knowledge below), write a clear issueSummary & neutralAssessment including any self-reported details (TH level, raid weekend, etc.), and keep complete=true.`;
+    intakeStateNote = `INTAKE STATUS: ALL REQUIRED INFO IS COMPLETE!${unavailReminder} Acknowledge what they shared naturally, let them know you've noted their info for the team who will check this ticket soon, and answer any follow-up questions they have using the Server Knowledge below. Keep complete=true.`;
   } else {
     const unavailReminder =
       unavailableKeys.length > 0
         ? ` Never re-ask unavailable fields (${unavailableKeys.join(', ')}).`
         : '';
-    intakeStateNote = `INTAKE STATUS: Still gathering (${progress.missingRequiredQuestions.map((q) => q.key).join(', ') || 'none'}).${unavailReminder} If the opener states they don't have or can't check a field, list its key in unavailableFields.`;
+    intakeStateNote = `INTAKE STATUS: Gathering intake fields (${progress.missingRequiredQuestions.map((q) => q.key).join(', ') || 'none'}).${unavailReminder} If the opener answers questions, record them.`;
   }
 
   return [

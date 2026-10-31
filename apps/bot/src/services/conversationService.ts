@@ -303,9 +303,12 @@ export class ConversationService {
 
       const latestProfile = this.mergeCompletedLookups(lookupRecords.map((l) => l.parsedData));
 
-      // Fallback embed sync: If player_tag hasn't been recorded yet on early turns, inspect recent channel
-      // messages once in case the ticket provider bot's 1st embed had `player tag: #9rqu2yqpl`.
-      if (validAnswers.player_tag === undefined) {
+      // Fallback embed sync: If any configured questions haven't been recorded yet on early turns, inspect recent channel
+      // messages in case the ticket provider bot posted an application embed.
+      const hasMissingQuestions = currentSession.configSnapshot.category.questions.some(
+        (q) => validAnswers[q.key] === undefined
+      );
+      if (hasMissingQuestions) {
         try {
           const recentChannelMsgs = await this.messenger.fetchRecentMessages(
             currentSession.channelId,
@@ -487,7 +490,7 @@ export class ConversationService {
         const extractedText = String(extractedVal).trim();
         if (
           detectUnavailableResponseIntent(extractedText) ||
-          /^(?:none|n\/a|unavailable|unknown|no\s*tag)$/i.test(extractedText)
+          /^(?:none|n\/a|unavailable|unknown|not\s*applicable)$/i.test(extractedText)
         ) {
           if (validAnswers[key] === undefined) {
             const unavailableVal = formatUnavailableAnswer(
@@ -529,15 +532,6 @@ export class ConversationService {
               action: qDef.triggerLookupAction,
               target: String(check.normalizedValue),
             };
-          } else if (
-            qDef.type === 'player_tag' &&
-            check.normalizedValue !== null &&
-            !isUnavailableAnswer(check.normalizedValue)
-          ) {
-            autoTriggeredLookup = {
-              action: 'lookup_player',
-              target: String(check.normalizedValue),
-            };
           }
         } else {
           newValidationErrors.push(`${qDef.question} (${check.error ?? 'Invalid value'})`);
@@ -549,32 +543,6 @@ export class ConversationService {
             validated: false,
             validationNote: check.error ?? 'Invalid format',
           });
-        }
-      }
-
-      // Also capture explicit #TAG from chat even when category.questions is []
-      if (!questionsByKey.has('player_tag')) {
-        const directTag =
-          parseCandidatePlayerTag(sanitized.sanitizedText, false) ??
-          (aiOutput.turn.lookupTarget
-            ? parseCandidatePlayerTag(aiOutput.turn.lookupTarget, false)
-            : null);
-        if (directTag) {
-          validAnswers.player_tag = directTag;
-          await this.repo.upsertTicketAnswer({
-            sessionId: currentSession.id,
-            questionKey: 'player_tag',
-            answerValue: directTag,
-            rawText: directTag,
-            validated: true,
-            validationNote: null,
-          });
-          if (!autoTriggeredLookup) {
-            autoTriggeredLookup = {
-              action: 'lookup_player',
-              target: directTag,
-            };
-          }
         }
       }
 

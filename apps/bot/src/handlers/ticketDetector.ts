@@ -476,8 +476,12 @@ export function extractTicketOpeningEmbedData(params: {
     }
   }
 
-  // Always populate `player_tag` when found in the opening embed, even if category.questions is []
-  if (playerTag && matchedQuestionAnswers.player_tag === undefined) {
+  // Populate player_tag only if configured in the questions or if a player_tag question key exists
+  if (
+    playerTag &&
+    matchedQuestionAnswers.player_tag === undefined &&
+    questions.some((q) => q.key === 'player_tag' || q.type === 'player_tag')
+  ) {
     matchedQuestionAnswers.player_tag = playerTag;
   }
 

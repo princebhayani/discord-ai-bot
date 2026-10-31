@@ -2,7 +2,18 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Save, Trash2 } from 'lucide-react';
+import {
+  CheckCircle2,
+  FolderOpen,
+  FolderPlus,
+  HelpCircle,
+  Layers,
+  Plus,
+  Save,
+  ShieldAlert,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
 import type { CategoryConfig, FaqItem, ServerSettings } from '@hrbot/shared';
 import { useSaveStatus } from '@/hooks/useSaveStatus';
 import { StatusBanner } from '@/components/layout/StatusBanner';
@@ -79,7 +90,7 @@ export function CategoryManagerClient({
       guildId: initialServerSettings.guildId,
       categoryId: trimmedId,
       categoryName: trimmedName,
-      enabled: false,
+      enabled: true,
       welcomeMessage: '',
       categoryInstructions: '',
       faqs: [],
@@ -107,8 +118,8 @@ export function CategoryManagerClient({
     if (!selectedCategory) return;
     const nextFaq: FaqItem = {
       id: `faq_${Date.now()}`,
-      question: 'Common question?',
-      answer: 'Helpful answer.',
+      question: 'Common inquiry?',
+      answer: 'Helpful, concise answer for the AI to cite.',
     };
     updateSelected({ faqs: [...selectedCategory.faqs, nextFaq] });
   }
@@ -145,7 +156,7 @@ export function CategoryManagerClient({
         )
       );
       router.refresh();
-      return `Published "${json.category.categoryName}" (v${json.category.configVersion}). Active tickets keep prior snapshot.`;
+      return `Published "${json.category.categoryName}" (v${json.category.configVersion}). Active tickets keep their frozen snapshot.`;
     });
   }
 
@@ -172,97 +183,144 @@ export function CategoryManagerClient({
     <div className="space-y-6">
       <StatusBanner status={status} />
 
-      {/* Server-Wide Defaults */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Server Introduction & Global Assistant State</CardTitle>
-          <CardDescription>
-            Default welcome introduction sent once when an eligible ticket opens (can be overridden
-            per category below).
-          </CardDescription>
+      {/* Server-Wide Introduction Defaults */}
+      <Card className="glass-card border border-border/60">
+        <CardHeader className="pb-4 border-b border-border/40">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                <Sparkles className="h-4 w-4 text-primary" />
+                Global Assistant & Server Introduction
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Default welcoming message sent once when an eligible ticket opens. Can be overridden per-category below.
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={botEnabled ? 'success' : 'secondary'} className="text-xs">
+                {botEnabled ? 'Global Assistant Active' : 'Global Assistant Paused'}
+              </Badge>
+            </div>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-4 pt-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="guildName">Server Display Name</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="guildName" className="text-xs text-muted-foreground">
+                Discord Server Name
+              </Label>
               <Input
                 id="guildName"
+                className="bg-muted/30 border-border/60"
                 value={guildName}
                 onChange={(e) => setGuildName(e.target.value)}
               />
             </div>
-            <div className="flex items-center justify-between rounded-lg border p-3">
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 p-3">
               <div>
-                <p className="text-sm font-medium">Global AI Assistant</p>
-                <p className="text-xs text-muted-foreground">
-                  Pause all new ticket sessions without disconnecting the bot
+                <p className="text-xs font-medium text-foreground">Global Conversation Switch</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Pause assistant across all categories without taking the bot offline
                 </p>
               </div>
               <Switch checked={botEnabled} onCheckedChange={setBotEnabled} />
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="defaultWelcome">Default Welcome Introduction</Label>
+          <div className="space-y-1.5">
+            <Label htmlFor="defaultWelcome" className="text-xs text-muted-foreground">
+              Server-Wide Default Welcome Message
+            </Label>
             <Textarea
               id="defaultWelcome"
-              rows={4}
+              rows={3}
+              className="bg-muted/30 border-border/60 text-sm font-sans"
+              placeholder="e.g. Hello! Welcome to the server. How can we help you today?"
               value={defaultWelcome}
               onChange={(e) => setDefaultWelcome(e.target.value)}
             />
           </div>
 
-          <Button onClick={saveServerDefaults}>
-            <Save className="h-4 w-4" />
-            Save Server Introduction
-          </Button>
+          <div className="flex justify-end pt-1">
+            <Button
+              onClick={saveServerDefaults}
+              className="shadow-sm shadow-primary/20 hover:shadow-primary/40"
+            >
+              <Save className="mr-2 h-4 w-4" />
+              Save Server Defaults
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Category List & Editor */}
+      {/* Category List & Configuration */}
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-1">
-          <CardHeader>
-            <CardTitle>Ticket Categories</CardTitle>
-            <CardDescription>
-              Register existing Discord category IDs managed by your ticket bot.
+        {/* Left Column: Categories List */}
+        <Card className="glass-card border border-border/60 lg:col-span-1">
+          <CardHeader className="pb-3 border-b border-border/40">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Layers className="h-4 w-4 text-primary" />
+                Ticket Categories ({categories.length})
+              </CardTitle>
+            </div>
+            <CardDescription className="text-xs">
+              Categories managed by your Discord ticket system.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              {categories.map((cat) => (
-                <button
-                  key={cat.categoryId}
-                  type="button"
-                  onClick={() => setSelectedCategoryId(cat.categoryId)}
-                  className={`flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors ${
-                    selectedCategoryId === cat.categoryId
-                      ? 'border-primary bg-primary/5'
-                      : 'hover:bg-accent'
-                  }`}
-                >
-                  <div>
-                    <p className="text-sm font-medium">{cat.categoryName}</p>
-                    <p className="font-mono text-xs text-muted-foreground">{cat.categoryId}</p>
-                  </div>
-                  <Badge variant={cat.enabled ? 'success' : 'secondary'}>
-                    {cat.enabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                </button>
-              ))}
+          <CardContent className="space-y-4 pt-4">
+            <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+              {categories.length === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-4">No categories added yet.</p>
+              ) : (
+                categories.map((cat) => (
+                  <button
+                    key={cat.categoryId}
+                    type="button"
+                    onClick={() => setSelectedCategoryId(cat.categoryId)}
+                    className={`flex w-full items-center justify-between rounded-lg border p-3 text-left transition-all ${
+                      selectedCategoryId === cat.categoryId
+                        ? 'border-primary/60 bg-primary/10 shadow-sm'
+                        : 'border-border/40 bg-muted/15 hover:border-border/70 hover:bg-muted/30'
+                    }`}
+                  >
+                    <div className="min-w-0 pr-2">
+                      <p className="text-xs font-semibold text-foreground truncate">
+                        {cat.categoryName}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground truncate">
+                        ID: {cat.categoryId}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground/80 mt-0.5">
+                        v{cat.configVersion} • {cat.questions.length} questions
+                      </p>
+                    </div>
+                    <Badge
+                      variant={cat.enabled ? 'success' : 'secondary'}
+                      className="text-[10px] shrink-0"
+                    >
+                      {cat.enabled ? 'Active' : 'Muted'}
+                    </Badge>
+                  </button>
+                ))
+              )}
             </div>
 
-            <div className="space-y-2 rounded-lg border p-3">
-              <p className="text-xs font-semibold uppercase text-muted-foreground">
-                Add Existing Discord Category
-              </p>
+            {/* Quick Add Category Card */}
+            <div className="space-y-2 rounded-xl border border-dashed border-border/60 bg-muted/20 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                <FolderPlus className="h-3.5 w-3.5 text-primary" />
+                <span>Register Category</span>
+              </div>
               <Input
+                className="text-xs bg-background border-border/60 font-mono"
                 placeholder="Discord Category ID (17-20 digits)"
                 value={newCategoryId}
                 onChange={(e) => setNewCategoryId(e.target.value)}
               />
               <Input
-                placeholder="Category Name (e.g. Player Support)"
+                className="text-xs bg-background border-border/60"
+                placeholder="Category Name (e.g. Join Requests)"
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}
               />
@@ -270,47 +328,66 @@ export function CategoryManagerClient({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="w-full"
+                className="w-full text-xs border-border/60 hover:bg-primary/10 hover:text-primary"
                 onClick={handleAddCategory}
+                disabled={!/^\d{15,22}$/.test(newCategoryId.trim()) || !newCategoryName.trim()}
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
                 Add Category
               </Button>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>
-              {selectedCategory
-                ? `Configure: ${selectedCategory.categoryName} (v${selectedCategory.configVersion})`
-                : 'Select or Add a Category'}
-            </CardTitle>
-            <CardDescription>
-              Control AI activation, custom welcome message, category instructions, and FAQs.
-            </CardDescription>
+        {/* Right Column: Category Editor */}
+        <Card className="glass-card border border-border/60 lg:col-span-2">
+          <CardHeader className="pb-3 border-b border-border/40">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <CardTitle className="text-sm font-semibold">
+                  {selectedCategory
+                    ? `Configure: ${selectedCategory.categoryName} (v${selectedCategory.configVersion})`
+                    : 'Select or Add a Category'}
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Fine-tune AI activation, category instructions, welcome overrides, and FAQs.
+                </CardDescription>
+              </div>
+              {selectedCategory && (
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
+                    Snapshot v{selectedCategory.configVersion}
+                  </Badge>
+                </div>
+              )}
+            </div>
           </CardHeader>
-          <CardContent>
+
+          <CardContent className="pt-4">
             {!selectedCategory ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                Select a category on the left or register a Discord Category ID to begin.
-              </p>
+              <div className="py-16 text-center space-y-2">
+                <FolderOpen className="h-8 w-8 text-muted-foreground mx-auto" />
+                <p className="text-sm font-medium text-foreground">No Category Selected</p>
+                <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                  Select an existing category on the left or register a new Discord Category ID to edit its rules.
+                </p>
+              </div>
             ) : (
               <div className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Category Name</Label>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Category Name</Label>
                     <Input
+                      className="bg-muted/30 border-border/60 text-sm"
                       value={selectedCategory.categoryName}
                       onChange={(e) => updateSelected({ categoryName: e.target.value })}
                     />
                   </div>
-                  <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                     <div>
-                      <p className="text-sm font-medium">Enable AI in Category</p>
-                      <p className="text-xs text-muted-foreground">
-                        Only enabled categories trigger conversations
+                      <p className="text-xs font-medium text-foreground">Enable AI in Category</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Tickets here trigger the conversational assistant
                       </p>
                     </div>
                     <Switch
@@ -321,11 +398,11 @@ export function CategoryManagerClient({
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                     <div>
-                      <p className="text-sm font-medium">Allow Player-Data Bot Lookups</p>
-                      <p className="text-xs text-muted-foreground">
-                        Permit approved player/clan lookups in this category
+                      <p className="text-xs font-medium text-foreground">External Bot Lookups</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Permit queries to external bot in this category
                       </p>
                     </div>
                     <Switch
@@ -336,10 +413,11 @@ export function CategoryManagerClient({
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    <Label>Report Channel Override ID (Optional)</Label>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Report Channel Override ID</Label>
                     <Input
-                      placeholder="Pre-existing staff channel Snowflake ID"
+                      className="bg-muted/30 border-border/60 font-mono text-xs"
+                      placeholder="Optional staff channel Snowflake ID"
                       value={selectedCategory.reportChannelOverrideId ?? ''}
                       onChange={(e) =>
                         updateSelected({ reportChannelOverrideId: e.target.value })
@@ -348,81 +426,114 @@ export function CategoryManagerClient({
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Category Welcome Message Override (Optional)</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">
+                    Category Welcome Message Override (Optional)
+                  </Label>
                   <Textarea
-                    rows={3}
-                    placeholder="Leave blank to use the server default welcome introduction..."
+                    rows={2}
+                    className="bg-muted/30 border-border/60 text-sm font-sans"
+                    placeholder="Leave empty to use server-wide welcome introduction..."
                     value={selectedCategory.welcomeMessage ?? ''}
                     onChange={(e) => updateSelected({ welcomeMessage: e.target.value })}
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Category-Specific AI Instructions</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Category AI Guidance / Instructions</Label>
                   <Textarea
-                    rows={3}
-                    placeholder="e.g., Ask politely about war attacks or recruitment requirements..."
+                    rows={2}
+                    className="bg-muted/30 border-border/60 text-sm font-sans"
+                    placeholder="e.g. Welcome new applicants warmly, ask what role they are looking for..."
                     value={selectedCategory.categoryInstructions}
                     onChange={(e) => updateSelected({ categoryInstructions: e.target.value })}
                   />
                 </div>
 
-                {/* FAQs */}
-                <div className="space-y-3 rounded-lg border p-4">
+                {/* FAQs Accordion / List */}
+                <div className="space-y-3 rounded-xl border border-border/60 bg-muted/15 p-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium">Category FAQs</p>
-                      <p className="text-xs text-muted-foreground">
-                        Verified answers the AI may reference while collecting ticket details.
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Category FAQs ({selectedCategory.faqs.length})
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Verified knowledge the assistant references when members ask questions.
                       </p>
                     </div>
-                    <Button type="button" variant="outline" size="sm" onClick={addFaq}>
-                      <Plus className="h-4 w-4" />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs border-border/60 hover:bg-primary/10 hover:text-primary"
+                      onClick={addFaq}
+                    >
+                      <Plus className="mr-1 h-3 w-3" />
                       Add FAQ
                     </Button>
                   </div>
 
-                  {selectedCategory.faqs.map((faq) => (
-                    <div key={faq.id} className="space-y-2 rounded-md border bg-muted/30 p-3">
-                      <div className="flex items-center gap-2">
-                        <Input
-                          value={faq.question}
-                          placeholder="Question"
-                          onChange={(e) => updateFaq(faq.id, { question: e.target.value })}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => removeFaq(faq.id)}
+                  {selectedCategory.faqs.length === 0 ? (
+                    <p className="text-xs text-muted-foreground/70 italic text-center py-2">
+                      No FAQs configured for this category yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedCategory.faqs.map((faq) => (
+                        <div
+                          key={faq.id}
+                          className="space-y-2 rounded-lg border border-border/50 bg-background/50 p-3"
                         >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
-                      <Textarea
-                        rows={2}
-                        value={faq.answer}
-                        placeholder="Approved answer"
-                        onChange={(e) => updateFaq(faq.id, { answer: e.target.value })}
-                      />
+                          <div className="flex items-center gap-2">
+                            <Input
+                              className="text-xs bg-muted/20 border-border/50 font-medium"
+                              value={faq.question}
+                              placeholder="Question (e.g. When are community events?)"
+                              onChange={(e) => updateFaq(faq.id, { question: e.target.value })}
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => removeFaq(faq.id)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                          <Textarea
+                            rows={2}
+                            className="text-xs bg-muted/20 border-border/50 font-sans"
+                            value={faq.answer}
+                            placeholder="Helpful answer the AI should cite..."
+                            onChange={(e) => updateFaq(faq.id, { answer: e.target.value })}
+                          />
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
 
-                <div className="flex items-center justify-between pt-2">
-                  <Button type="button" onClick={publishSelectedCategory}>
-                    <Save className="h-4 w-4" />
-                    Publish Category Version
-                  </Button>
+                {/* Footer Controls */}
+                <div className="flex items-center justify-between pt-3 border-t border-border/40">
                   <Button
                     type="button"
                     variant="destructive"
                     size="sm"
+                    className="text-xs"
                     onClick={deleteSelectedCategory}
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     Delete Category
+                  </Button>
+
+                  <Button
+                    type="button"
+                    onClick={publishSelectedCategory}
+                    className="shadow-sm shadow-primary/20 hover:shadow-primary/40 text-xs"
+                  >
+                    <Save className="mr-1.5 h-3.5 w-3.5" />
+                    Publish Category Snapshot
                   </Button>
                 </div>
               </div>
@@ -433,4 +544,3 @@ export function CategoryManagerClient({
     </div>
   );
 }
-

@@ -302,7 +302,6 @@ describe('Phase 2: Discord Gateway Intents & Ticket Channel/Thread Detection', (
 
     expect(extractedFromDescription.hasPlayerTagField).toBe(true);
     expect(extractedFromDescription.playerTag).toBe('#9RQU2YQPL');
-    expect(extractedFromDescription.matchedQuestionAnswers.player_tag).toBe('#9RQU2YQPL');
 
     // 2. ClashDuke embed using an Application field + multi-line >>> subtext + unprefixed tag + extra question
     const extractedFromField = extractTicketOpeningEmbedData({

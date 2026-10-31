@@ -873,7 +873,7 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
     expect(antiClone.toLowerCase()).toContain('my bad');
   });
 
-  it('grabs #9RQU2YQPL automatically from ClashDuke 1st opening embed (running .p lookup & skipping tag prompt), and asks for tag only when omitted', async () => {
+  it('greets the opener cleanly on welcome without demanding player tag, focuses on community questions, and supports conversational chat', async () => {
     const STAFF_CH = '892222222222222222';
     const repo = new InMemoryBotRepository();
     repo.setServerSettings(
@@ -888,17 +888,12 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
           mentionUserOnWelcome: true,
         },
         aiSettings: {
-          model: 'llama-3.3-70b-versatile',
+          model: 'openai/gpt-oss-120b',
           personaName: 'Duke The Recruiter',
           humanizeConversation: true,
         },
         playerIntegrationConfig: {
-          enabled: true,
-          quickCommandLine: '.p {tag}',
-          executionChannelMode: 'dedicated_channel',
-          executionChannelId: EXEC_CHANNEL_ID,
-          externalBotUserId: DATA_BOT_ID,
-          timeoutMs: 2500,
+          enabled: false,
         },
         reportSettings: {
           destinationMode: 'staff_channel',
@@ -907,15 +902,28 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
       })
     );
 
-    // Match user's live Boom House setup where category.questions is [] (empty)
+    // Setup category with community intake questions (e.g. how active, what looking for)
     repo.setCategoryConfigs(GUILD_ID, [
       CategoryConfigSchema.parse({
         guildId: GUILD_ID,
         categoryId: CAT_ID,
-        categoryName: 'Recruitment',
+        categoryName: 'General Intake',
         enabled: true,
-        playerLookupEnabled: true,
-        questions: [],
+        playerLookupEnabled: false,
+        questions: [
+          {
+            key: 'what_looking_for',
+            question: 'What are you looking forward to most in our community?',
+            type: 'text',
+            required: true,
+          },
+          {
+            key: 'how_often_active',
+            question: 'How often are you usually active during the week?',
+            type: 'text',
+            required: true,
+          },
+        ],
       }),
     ]);
 
@@ -923,12 +931,12 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
     const fakeGroq = new FakeGroqClient();
     const logger = new Logger('error');
     const qm = new TicketQueueManager();
-    const configService = new ConfigService(repo, GUILD_ID, 'llama-3.3-70b-versatile', 0);
+    const configService = new ConfigService(repo, GUILD_ID, 'openai/gpt-oss-120b', 0);
     const sessionManager = new SessionManager(GUILD_ID, repo, configService, messenger, qm, logger);
     const groqService = new GroqAiService(
       fakeGroq,
       new GlobalSemaphore(5),
-      'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
       logger
     );
     const playerAdapter = new PlayerDataBotAdapter(repo, messenger, logger);
@@ -944,61 +952,11 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
       configService
     );
 
-    messenger.onCommandSent = (ch, content) => {
-      if (ch === EXEC_CHANNEL_ID && content === '.p #9RQU2YQPL') {
-        setTimeout(() => {
-          playerAdapter.observeExternalBotMessage({
-            id: 'clashperk-embed-1',
-            channelId: EXEC_CHANNEL_ID,
-            guildId: GUILD_ID,
-            authorId: DATA_BOT_ID,
-            authorUsername: 'ClashPerk',
-            authorBot: true,
-            content: '',
-            embeds: [
-              {
-                title: 'PRINCE (#9RQU2YQPL)',
-                description: 'Town Hall: 15\nClan: Boom House\nTrophies: 4950',
-                fields: [],
-              },
-            ],
-            mentionsUserIds: [],
-            createdTimestamp: Date.now(),
-          });
-        }, 10);
-      }
-    };
-
-    let autoReportPayload: Awaited<ReturnType<typeof reportService.generateAndDeliverReport>> = null;
-    sessionManager.setOpeningEmbedIntakeCallback(async ({ session, embedData, signal }) => {
-      let activeSession = session;
-      if (embedData.playerTag) {
-        await playerAdapter.executeLookup({
-          session: activeSession,
-          rawAction: 'lookup_player',
-          rawTarget: embedData.playerTag,
-          signal,
-        });
-        const ready = await repo.updateTicketSession(activeSession.id, {
-          status: 'ready_for_review',
-        });
-        if (ready) activeSession = ready;
-        autoReportPayload = await reportService.generateAndDeliverReport({
-          session: activeSession,
-          issueSummary: `Player opened ticket with application tag ${embedData.playerTag}.`,
-          neutralAssessment: 'Extracted from initial ticket embed.',
-          signal,
-        });
-      }
-      return activeSession;
-    });
-
-    // --- BRANCH A: ClashDuke 1st embed HAS `Application -> player tag -> #9rqu2yqpl` ---
-    const ticketWithTagId = '750000000000000001';
-    messenger.recentMessagesByChannel.set(ticketWithTagId, [
+    const ticketChannelId = '750000000000000001';
+    messenger.recentMessagesByChannel.set(ticketChannelId, [
       {
-        id: 'clashduke-msg-0111',
-        channelId: ticketWithTagId,
+        id: 'ticket-open-panel-1',
+        channelId: ticketChannelId,
         guildId: GUILD_ID,
         authorId: TICKET_BOT_ID,
         authorUsername: 'ClashDuke',
@@ -1007,7 +965,7 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
         embeds: [
           {
             title: 'Open Ticket · #0111',
-            description: `Opened by <@${PLAYER_ID}>\n\n**Application**\n> **player tag**\n> #9rqu2yqpl`,
+            description: `Opened by <@${PLAYER_ID}>`,
             fields: [],
           },
         ],
@@ -1016,9 +974,9 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
       },
     ]);
 
-    const sessionA = await sessionManager.observeChannelOrThreadCreated({
+    const session = await sessionManager.observeChannelOrThreadCreated({
       exists: true,
-      channelId: ticketWithTagId,
+      channelId: ticketChannelId,
       guildId: GUILD_ID,
       name: 'ticket-0111',
       topic: null,
@@ -1031,103 +989,84 @@ describe('Phase 4 & Phase 5: Groq Conversational Engine & External Player-Data B
       locked: false,
     });
 
-    expect(sessionA?.playerDiscordId).toBe(PLAYER_ID);
-    const welcomeA =
-      messenger.sent.find((m) => m.channelId === ticketWithTagId)?.payload.content ?? '';
-    expect(welcomeA).toContain(`<@${PLAYER_ID}>`);
-    expect(welcomeA).toContain('#9RQU2YQPL');
-    expect(welcomeA.toLowerCase()).not.toContain('dropping your player tag');
+    expect(session?.playerDiscordId).toBe(PLAYER_ID);
+    const welcome =
+      messenger.sent.find((m) => m.channelId === ticketChannelId)?.payload.content ?? '';
+    // Must tag opener and append the first community intake question cleanly without demanding a player tag
+    expect(welcome).toContain(`<@${PLAYER_ID}>`);
+    expect(welcome).toContain('What are you looking forward to most in our community?');
+    expect(welcome.toLowerCase()).not.toContain('player tag');
 
-    // Verify `.p #9RQU2YQPL` ran automatically and Staff Report has verified TH15 + #9RQU2YQPL
-    expect(
-      messenger.sent.some(
-        (m) => m.channelId === EXEC_CHANNEL_ID && m.payload.content === '.p #9RQU2YQPL'
-      )
-    ).toBe(true);
-    expect(autoReportPayload?.playerInformation.playerTag).toBe('#9RQU2YQPL');
-    expect(autoReportPayload?.playerInformation.townHallLevel).toBe(15);
-
-    // If player then chats "hi", Groq prompt explicitly tells the model #9RQU2YQPL is ALREADY collected!
+    // Turn 1: Player replies explaining what they are looking for
     fakeGroq.queuedResponses.push((req) => {
       const sys = req.messages[0]?.content ?? '';
-      expect(sys).toContain('#9RQU2YQPL');
-      expect(sys).toContain('ALREADY grabbed their player tag (#9RQU2YQPL)');
-      expect(sys).toContain('Player tag (#9RQU2YQPL) is ALREADY collected');
+      expect(sys).toContain('What are you looking forward to most in our community?');
       return {
         content: JSON.stringify({
-          reply: "hey, i already grabbed your tag #9RQU2YQPL from your ticket - one of the leaders will check out your th15 base soon.",
-          extractedAnswers: {},
+          reply: "awesome, sounds like a great fit! How often are you usually active during the week?",
+          extractedAnswers: { what_looking_for: 'Looking for an active team to hang out and grow with' },
           unavailableFields: [],
-          missingFields: [],
+          missingFields: ['how_often_active'],
           requestedAction: 'none',
           lookupTarget: null,
           issueSummary: null,
           neutralAssessment: null,
-          complete: true,
+          complete: false,
         }),
-        promptTokens: 210,
-        completionTokens: 35,
+        promptTokens: 220,
+        completionTokens: 40,
       };
     });
 
     await conversationService.handleIncomingMessage({
-      id: 'prince-hi-a',
-      channelId: ticketWithTagId,
+      id: 'prince-msg-1',
+      channelId: ticketChannelId,
       guildId: GUILD_ID,
       authorId: PLAYER_ID,
       authorUsername: 'PRINCE',
       authorBot: false,
-      content: 'hi',
+      content: 'im looking for an active team to hang out and grow with',
       embeds: [],
       mentionsUserIds: [],
       createdTimestamp: Date.now(),
     });
 
-    const ticketAReplies = messenger.sent.filter((m) => m.channelId === ticketWithTagId);
-    expect(ticketAReplies).toHaveLength(2);
-    expect(ticketAReplies[1]?.payload.content).toContain('#9RQU2YQPL');
+    const replies1 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies1[1]?.payload.content).toContain('active during the week');
 
-    // --- BRANCH B: ClashDuke 1st embed has NO valid player tag (left as `-`) ---
-    const ticketWithoutTagId = '750000000000000002';
-    messenger.recentMessagesByChannel.set(ticketWithoutTagId, [
-      {
-        id: 'clashduke-msg-0112',
-        channelId: ticketWithoutTagId,
-        guildId: GUILD_ID,
-        authorId: TICKET_BOT_ID,
-        authorUsername: 'ClashDuke',
-        authorBot: true,
-        content: `<@${PLAYER_ID}>`,
-        embeds: [
-          {
-            title: 'Open Ticket · #0112',
-            description: `Opened by <@${PLAYER_ID}>\n\n**Application**\n> **player tag**\n> -`,
-            fields: [],
-          },
-        ],
-        mentionsUserIds: [PLAYER_ID],
-        createdTimestamp: Date.now(),
-      },
-    ]);
+    // Turn 2: Player provides activity and asks a general question about the community ("infinite chat")
+    fakeGroq.queuedResponses.push(() => ({
+      content: JSON.stringify({
+        reply: "daily is perfect! And yeah, we have weekly community nights and voice chats. I've noted your info for the moderators who will check in here soon - let me know if you have any other questions in the meantime!",
+        extractedAnswers: { how_often_active: 'almost every day' },
+        unavailableFields: [],
+        missingFields: [],
+        requestedAction: 'none',
+        lookupTarget: null,
+        issueSummary: 'Member looking for an active community team, active daily.',
+        neutralAssessment: 'Completed community intake questions; awaiting moderator review.',
+        complete: true,
+      }),
+      promptTokens: 250,
+      completionTokens: 50,
+    }));
 
-    await sessionManager.observeChannelOrThreadCreated({
-      exists: true,
-      channelId: ticketWithoutTagId,
+    await conversationService.handleIncomingMessage({
+      id: 'prince-msg-2',
+      channelId: ticketChannelId,
       guildId: GUILD_ID,
-      name: 'ticket-0112',
-      topic: null,
-      categoryId: CAT_ID,
-      parentChannelId: null,
-      isThread: false,
-      isPrivateThread: false,
-      ownerId: null,
-      archived: false,
-      locked: false,
+      authorId: PLAYER_ID,
+      authorUsername: 'PRINCE',
+      authorBot: false,
+      content: 'im on almost every day. do you guys do community events?',
+      embeds: [],
+      mentionsUserIds: [],
+      createdTimestamp: Date.now(),
     });
 
-    const welcomeB =
-      messenger.sent.find((m) => m.channelId === ticketWithoutTagId)?.payload.content ?? '';
-    expect(welcomeB).toContain(`<@${PLAYER_ID}>`);
-    expect(welcomeB).toContain('mind dropping your player tag');
+    const replies2 = messenger.sent.filter((m) => m.channelId === ticketChannelId);
+    expect(replies2[2]?.payload.content).toContain('daily is perfect');
+    const updatedSession = await repo.getTicketSessionByChannel(ticketChannelId);
+    expect(updatedSession?.status).toBe('ready_for_review');
   });
 });

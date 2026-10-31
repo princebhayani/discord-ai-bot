@@ -502,35 +502,8 @@ export class SessionManager {
         }
 
         if (!currentSession.welcomeSent && !signal.aborted) {
-          const progressAfterEmbed = evaluateQuestionnaireProgress(
-            categoryConfig.questions,
-            embedData.matchedQuestionAnswers
-          );
-          const expectsPlayerTag =
-            embedData.hasPlayerTagField ||
-            (categoryConfig.playerLookupEnabled && serverSettings.playerIntegrationConfig.enabled) ||
-            /\bplayer\s*tag\b/i.test(
-              `${serverSettings.aiSettings.serverKnowledge.joiningProcessAndTiming} ${categoryConfig.categoryInstructions}`
-            );
-
-          let dynamicWelcomeBody = currentSession.configSnapshot.welcomeMessage;
-          if (
-            embedData.playerTag &&
-            progressAfterEmbed.isComplete &&
-            currentSession.configSnapshot.aiSettings.humanizeConversation !== false &&
-            !dynamicWelcomeBody.includes(embedData.playerTag)
-          ) {
-            dynamicWelcomeBody = `${dynamicWelcomeBody} - got your tag ${embedData.playerTag} from your ticket, passing your info over to the leaders now so someone will hop in here soon.`;
-          } else if (
-            !embedData.playerTag &&
-            expectsPlayerTag &&
-            !dynamicWelcomeBody.includes('?')
-          ) {
-            dynamicWelcomeBody = `${dynamicWelcomeBody} - mind dropping your player tag so i can check out your base?`;
-          }
-
           const welcomeText = formatWelcomeMessageWithUserTag({
-            welcomeMessage: dynamicWelcomeBody,
+            welcomeMessage: currentSession.configSnapshot.welcomeMessage,
             playerDiscordId: currentSession.playerDiscordId,
             mentionUserOnWelcome: currentSession.configSnapshot.mentionUserOnWelcome,
           });
